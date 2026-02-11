@@ -7,3 +7,4 @@ passlib[bcrypt]
 python-jose
 openai
 pydantic-settings
+docx
