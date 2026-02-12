@@ -243,8 +243,8 @@ async def signup(payload: SignupPayload, db: Session = Depends(get_db)):
             COOKIE_NAME,
             token,
             httponly=True,
-            samesite="lax",
-            secure=False,
+            samesite="none",
+            secure=True,
             max_age=60 * 60 * 8,
             path="/",
         )
@@ -289,8 +289,8 @@ async def login(payload: LoginPayload, db: Session = Depends(get_db)):
             key=COOKIE_NAME,
             value=token,
             httponly=True,
-            samesite="lax",
-            secure=False,
+            samesite="none",
+            secure=True,
             path="/",
             max_age=60 * 60 * 8,
         )
@@ -409,7 +409,8 @@ async def chat_api(payload: dict, request: Request, db: Session = Depends(get_db
         chat_cookie_name(bot_id), 
         str(conv.id),
         path="/", 
-        samesite="lax",
+        samesite="none",
+        secure=True, 
         httponly=True,
         max_age=60*60*24*30
     )
