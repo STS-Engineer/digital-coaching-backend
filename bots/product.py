@@ -1,11 +1,17 @@
+import json
+import re
 from pathlib import Path
+
 from docx import Document
 
 from openai_client import client, MODEL
+from rfq_db import init_rfq_db, rfq_session, list_product_lines, list_products, list_products_grouped_by_line, search_products_by_name
 
 # --- Paths robustes ---
 BASE_DIR = Path(__file__).resolve().parent.parent 
 DOC_PATH = BASE_DIR / "docs" / "Product_line_exploration.docx" 
+
+init_rfq_db()
 
 SYSTEM_PROMPT = """
 # DIGITAL COACHING SYSTEM — PRODUCT & PRODUCT LINES ONLY (SYSTEM INSTRUCTIONS)
@@ -68,7 +74,7 @@ Immediately after the greeting, in the **same turn**, the assistant MUST:
 ===========================
 The assistant MUST always load the following module:
 
-- **Product and Product Lines understanding** → Product line exploration.docx
+- **Product and Product Lines understanding** → Product_line_exploration.docx
 ===========================
  Critical Content Rule (Anti-Hallucination)
 ===========================
@@ -148,6 +154,40 @@ LANG_MAP = {
     "hindi": "हिन्दी",
 }
 
+def build_rfq_context_for_chatbot(user_message: str) -> str | None:
+    text = (user_message or "").strip()
+    if not text:
+        return None
+
+    t = text.lower()
+
+    # Déclenchement UNIQUEMENT sur option 3 ou 4
+    is_opt3 = t in {"3", "option 3", "3.", "3)"} or t.startswith("3 ")
+    is_opt4 = t in {"4", "option 4", "4.", "4)"} or t.startswith("4 ")
+
+    if not (is_opt3 or is_opt4):
+        return None
+
+    payload = {}
+
+    try:
+        with rfq_session() as db:
+            if is_opt3:
+                # Option 3: liste des lignes
+                payload["productLinesList"] = list_product_lines(db, limit=100)
+
+            if is_opt4:
+                # Option 4: liste des produits
+                payload["productsByLine"] = list_products_grouped_by_line(db, limit=2000)
+
+    except Exception:
+        return None
+
+    if not payload:
+        return None
+
+    return "RFQ_DATABASE_CONTEXT:\n" + json.dumps(payload, ensure_ascii=False, indent=2)
+
 
 def load_docx_text(path: Path) -> str:
     if not path.exists():
@@ -175,27 +215,35 @@ FINAL_SYSTEM_PROMPT = (
 
 
 def run(message: str, session: dict) -> str:
-    # Toujours ajouter le message de l'utilisateur à l'historique
     history = session.setdefault("history", [])
     history.append({"role": "user", "content": message})
-    
-    # Préparer les messages pour l'API
-    messages = [{"role": "system", "content": FINAL_SYSTEM_PROMPT}] + history
-    
-    # Appeler l'API OpenAI
+
+    msg = (message or "").strip().lower()
+
+    # 1) Mémoriser le choix quand user tape 3/4
+    if msg in {"3", "option 3", "3.", "3)"}:
+        session["pending_option"] = "3"
+    elif msg in {"4", "option 4", "4.", "4)"}:
+        session["pending_option"] = "4"
+
+    # 2) Injecter le contexte DB:
+    # - soit quand user tape 3/4
+    # - soit si on est déjà dans un flow 3/4 (pending_option)
+    db_context = build_rfq_context_for_chatbot(message)
+
+    if not db_context and session.get("pending_option") in {"3", "4"}:
+        # Réinjecter la liste correspondant au flow en cours, même si user a écrit "ok"
+        db_context = build_rfq_context_for_chatbot(session["pending_option"])
+
+    messages = [{"role": "system", "content": FINAL_SYSTEM_PROMPT}]
+    if db_context:
+        messages.append({"role": "system", "content": db_context})
+    messages += history
+
     try:
-        res = client.chat.completions.create(
-            model=MODEL,
-            messages=messages,
-        )
-        
-        reply = res.choices[0].message.content
-        
-        # Ajouter la réponse de l'assistant à l'historique
+        res = client.chat.completions.create(model=MODEL, messages=messages)
+        reply = res.choices[0].message.content or ""
         history.append({"role": "assistant", "content": reply})
-        
         return reply
-        
-    except Exception as e:
-        # Gestion basique des erreurs
+    except Exception:
         return "I apologize for the technical issue. Please try again or contact support."
