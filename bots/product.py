@@ -11,6 +11,7 @@ from rfq_db import init_rfq_db, rfq_session, list_product_lines, list_products, 
 BASE_DIR = Path(__file__).resolve().parent.parent 
 DOC_PATH = BASE_DIR / "docs" / "Product_line_exploration.docx" 
 
+# ✅ à appeler UNE seule fois au démarrage de l'app
 init_rfq_db()
 
 SYSTEM_PROMPT = """
@@ -248,5 +249,45 @@ def run(message: str, session: dict) -> str:
     except Exception:
         return "I apologize for the technical issue. Please try again or contact support."
 
+
 def run_stream(message: str, session: dict):
-    yield from stream_chat(message, session, FINAL_SYSTEM_PROMPT)
+    history = session.setdefault("history", [])
+    history.append({"role": "user", "content": message})
+
+    msg = (message or "").strip().lower()
+
+    if msg in {"3", "option 3", "3.", "3)"}:
+        session["pending_option"] = "3"
+    elif msg in {"4", "option 4", "4.", "4)"}:
+        session["pending_option"] = "4"
+
+    db_context = build_rfq_context_for_chatbot(message)
+
+    if not db_context and session.get("pending_option") in {"3", "4"}:
+        db_context = build_rfq_context_for_chatbot(session["pending_option"])
+
+    messages = [{"role": "system", "content": FINAL_SYSTEM_PROMPT}]
+    if db_context:
+        messages.append({"role": "system", "content": db_context})
+    messages += history
+
+    parts = []
+    try:
+        stream = client.chat.completions.create(
+            model=MODEL,
+            messages=messages,
+            stream=True,
+        )
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content if chunk.choices else None
+            if not delta:
+                continue
+            parts.append(delta)
+            yield delta
+    except Exception:
+        error_text = "I apologize for the technical issue. Please try again or contact support."
+        parts = [error_text]
+        yield error_text
+
+    reply = "".join(parts)
+    history.append({"role": "assistant", "content": reply})
