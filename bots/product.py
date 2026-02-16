@@ -247,3 +247,6 @@ def run(message: str, session: dict) -> str:
         return reply
     except Exception:
         return "I apologize for the technical issue. Please try again or contact support."
+
+def run_stream(message: str, session: dict):
+    yield from stream_chat(message, session, FINAL_SYSTEM_PROMPT)
