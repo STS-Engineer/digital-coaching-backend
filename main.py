@@ -1,8 +1,9 @@
 from datetime import datetime, timezone
+import json
 import re
 
 from fastapi import FastAPI, Request, Depends, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -97,6 +98,12 @@ def make_title(first_user_message: str) -> str:
     
     return title
 
+def sse_event(data: dict, event: str | None = None) -> str:
+    payload = f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+    if event:
+        payload = f"event: {event}\n" + payload
+    return payload
+    
 def unique_title(db: Session, email: str, bot_id: str, base: str, exclude_id: int | None = None) -> str:
     base = (base or "New chat").strip()
     if not base:
@@ -180,6 +187,8 @@ class LoginPayload(BaseModel):
     email: str
     password: str
 
+class RenameChatPayload(BaseModel):
+    title: str
 
 def require_user(request: Request) -> str:
     token = request.cookies.get(COOKIE_NAME)
@@ -464,6 +473,192 @@ def history_get(bot_id: str, chat_id: int, request: Request, db: Session = Depen
         "updated_at": conv.updated_at.isoformat() if conv.updated_at else None
     }
 
+@app.post("/api/history/{bot_id}/{chat_id}/rename")
+def history_rename(bot_id: str, chat_id: int, payload: RenameChatPayload, request: Request, db: Session = Depends(get_db)):
+    email = require_user(request)
+
+    if bot_id not in BOTS:
+        raise HTTPException(status_code=400, detail="Unknown bot_id")
+
+    new_title = " ".join((payload.title or "").strip().split())
+    if not new_title:
+        raise HTTPException(status_code=400, detail="title required")
+
+    conv = (
+        db.query(Conversation)
+        .filter(Conversation.id == chat_id, Conversation.email == email, Conversation.bot_id == bot_id)
+        .first()
+    )
+    if not conv:
+        raise HTTPException(status_code=404, detail="chat not found")
+
+    conv.title = unique_title(db=db, email=email, bot_id=bot_id, base=new_title, exclude_id=conv.id)
+    conv.updated_at = utcnow()
+    db.commit()
+
+    return {
+        "ok": True,
+        "chat_id": conv.id,
+        "title": summarize_title(conv.title or "New chat"),
+        "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
+        "full_title": conv.title,
+    }
+
+@app.post("/api/history/{bot_id}/{chat_id}/delete")
+def history_delete(bot_id: str, chat_id: int, request: Request, db: Session = Depends(get_db)):
+    email = require_user(request)
+
+    if bot_id not in BOTS:
+        raise HTTPException(status_code=400, detail="Unknown bot_id")
+
+    conv = (
+        db.query(Conversation)
+        .filter(Conversation.id == chat_id, Conversation.email == email, Conversation.bot_id == bot_id)
+        .first()
+    )
+    if not conv:
+        raise HTTPException(status_code=404, detail="chat not found")
+
+    # Ensure messages are removed even if DB constraints lack ON DELETE CASCADE
+    db.query(Message).filter(Message.conversation_id == conv.id).delete(
+        synchronize_session=False
+    )
+    db.delete(conv)
+    db.commit()
+
+    resp = JSONResponse({"ok": True, "chat_id": chat_id})
+    cookie_name = chat_cookie_name(bot_id)
+    if request.cookies.get(cookie_name) == str(chat_id):
+        resp.delete_cookie(cookie_name, path="/")
+    return resp
+
+@app.post("/api/chat/stream")
+async def chat_api_stream(payload: dict, request: Request, db: Session = Depends(get_db)):
+    email = require_user(request)
+
+    bot_id = payload.get("bot_id")
+    message = (payload.get("message") or "").strip()
+    chat_id = payload.get("chat_id")
+
+    if not bot_id or not message:
+        raise HTTPException(status_code=400, detail="bot_id and message required")
+    if bot_id not in BOTS:
+        raise HTTPException(status_code=400, detail="Unknown bot_id")
+
+    conv = None
+
+    if chat_id is not None:
+        try:
+            payload_id = int(chat_id)
+            conv = (
+                db.query(Conversation)
+                .filter(
+                    Conversation.id == payload_id,
+                    Conversation.email == email,
+                    Conversation.bot_id == bot_id,
+                )
+                .first()
+            )
+        except (ValueError, TypeError):
+            pass
+
+    if not conv:
+        conv = create_conversation(db=db, email=email, bot_id=bot_id)
+
+    now = utcnow()
+    user_message = Message(
+        conversation_id=conv.id, role="user", content=message, created_at=now
+    )
+    db.add(user_message)
+
+    msgs = (
+        db.query(Message)
+        .filter(Message.conversation_id == conv.id)
+        .order_by(Message.created_at.asc())
+        .limit(60)
+        .all()
+    )
+    history = [{"role": m.role, "content": m.content} for m in msgs]
+
+    session = {
+        "history": history,
+        "ui_lang": conv.ui_lang,
+        "stage": conv.stage,
+    }
+
+    runner = BOTS[bot_id]["runner"]
+    runner_stream = BOTS[bot_id].get("runner_stream")
+
+    def event_stream():
+        assistant_parts = []
+        try:
+            yield sse_event({"chat_id": conv.id}, event="meta")
+
+            if runner_stream:
+                for chunk in runner_stream(message, session):
+                    if not chunk:
+                        continue
+                    assistant_parts.append(chunk)
+                    yield sse_event({"delta": chunk}, event="delta")
+            else:
+                reply = runner(message, session)
+                for i in range(0, len(reply), 20):
+                    chunk = reply[i : i + 20]
+                    assistant_parts.append(chunk)
+                    yield sse_event({"delta": chunk}, event="delta")
+
+            assistant_text = "".join(assistant_parts)
+            assistant_message = Message(
+                conversation_id=conv.id,
+                role="assistant",
+                content=assistant_text,
+                created_at=now,
+            )
+            db.add(assistant_message)
+
+            conv.ui_lang = session.get("ui_lang")
+            conv.stage = session.get("stage") or conv.stage
+            conv.updated_at = now
+
+            if conv.title == "New chat":
+                base = make_title(message)
+                if base != "New chat":
+                    conv.title = unique_title(
+                        db=db,
+                        email=email,
+                        bot_id=bot_id,
+                        base=base,
+                        exclude_id=conv.id,
+                    )
+
+            db.commit()
+
+            title = summarize_title(conv.title or "New chat")
+            updated_at = (conv.updated_at or utcnow()).isoformat()
+            yield sse_event(
+                {"chat_id": conv.id, "title": title, "updated_at": updated_at},
+                event="done",
+            )
+        except Exception:
+            db.rollback()
+            yield sse_event({"message": "server_error"}, event="error")
+
+    resp = StreamingResponse(event_stream(), media_type="text/event-stream")
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["X-Accel-Buffering"] = "no"
+    resp.set_cookie(
+        chat_cookie_name(bot_id),
+        str(conv.id),
+        path="/",
+        samesite="lax",
+        httponly=True,
+        max_age=60 * 60 * 24 * 30,
+    )
+    return resp
+
+@app.delete("/api/history/{bot_id}/{chat_id}")
+def history_delete_rest(bot_id: str, chat_id: int, request: Request, db: Session = Depends(get_db)):
+    return history_delete(bot_id=bot_id, chat_id=chat_id, request=request, db=db)
 
 if __name__ == "__main__":
     import uvicorn
