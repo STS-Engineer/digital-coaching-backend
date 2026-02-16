@@ -2,6 +2,7 @@ from pathlib import Path
 from docx import Document
 
 from openai_client import client, MODEL
+from .streaming import stream_chat
 
 # --- Paths robustes ---
 BASE_DIR = Path(__file__).resolve().parent.parent  # remonte au dossier projet
