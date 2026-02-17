@@ -5,7 +5,7 @@ from pathlib import Path
 from docx import Document
 
 from openai_client import client, MODEL
-from rfq_db import init_rfq_db, rfq_session, list_product_lines, list_products, list_products_grouped_by_line, search_products_by_name
+from rfq_db import init_rfq_db, rfq_session, list_product_lines, get_product_line_by_id, list_products, list_products_grouped_by_line, search_products_by_name
 
 # --- Paths robustes ---
 BASE_DIR = Path(__file__).resolve().parent.parent 
@@ -128,72 +128,9 @@ At the end of the module interaction, the assistant MUST:
 3. Remind the user they can ask a new product/product-line question at any time.
 """.strip()
 
-LANG_MENU = """Please select your preferred language.
-1- English
-2- Français
-3- 中文
-4- Español
-5- Deutsch
-6- हिन्दी
-"""
-
-LANG_MAP = {
-    "1": "English",
-    "2": "Français",
-    "3": "中文",
-    "4": "Español",
-    "5": "Deutsch",
-    "6": "हिन्दी",
-    "english": "English",
-    "français": "Français",
-    "francais": "Français",
-    "中文": "中文",
-    "español": "Español",
-    "espanol": "Español",
-    "deutsch": "Deutsch",
-    "हिन्दी": "हिन्दी",
-    "hindi": "हिन्दी",
-}
-
-def build_rfq_context_for_chatbot(user_message: str) -> str | None:
-    text = (user_message or "").strip()
-    if not text:
-        return None
-
-    t = text.lower()
-
-    # Déclenchement UNIQUEMENT sur option 3 ou 4
-    is_opt3 = t in {"3", "option 3", "3.", "3)"} or t.startswith("3 ")
-    is_opt4 = t in {"4", "option 4", "4.", "4)"} or t.startswith("4 ")
-
-    if not (is_opt3 or is_opt4):
-        return None
-
-    payload = {}
-
-    try:
-        with rfq_session() as db:
-            if is_opt3:
-                # Option 3: liste des lignes
-                payload["productLinesList"] = list_product_lines(db, limit=100)
-
-            if is_opt4:
-                # Option 4: liste des produits
-                payload["productsByLine"] = list_products_grouped_by_line(db, limit=2000)
-
-    except Exception:
-        return None
-
-    if not payload:
-        return None
-
-    return "RFQ_DATABASE_CONTEXT:\n" + json.dumps(payload, ensure_ascii=False, indent=2)
-
-
 def load_docx_text(path: Path) -> str:
     if not path.exists():
         raise FileNotFoundError(f"DOCX not found at: {path}")
-
     doc = Document(str(path))
     parts = []
     for p in doc.paragraphs:
@@ -202,48 +139,143 @@ def load_docx_text(path: Path) -> str:
             parts.append(txt)
     return "\n".join(parts)
 
-
-# --- Charge une seule fois au démarrage ---
 DOC_TEXT = load_docx_text(DOC_PATH)
+FINAL_SYSTEM_PROMPT = SYSTEM_PROMPT + "\n\n" + DOC_TEXT
 
-FINAL_SYSTEM_PROMPT = (
-    SYSTEM_PROMPT
-    + "\n\n-----------------------------------------------------------------------\n"
-    + "## LOADED MODULE CONTENT (DOCX)\n"
-    + "-----------------------------------------------------------------------\n"
-    + DOC_TEXT
-)
+# --- Anti-narration output cleaning (safety net) ---
+_FORBIDDEN_LINE_PATTERNS = [
+    r"(?im)^\s*i will.*$",
+    r"(?im)^\s*please hold.*$",
+    r"(?im)^\s*please wait.*$",
+    r"(?im)^\s*you selected.*$",
+    r"(?im)^\s*i have noted.*$",
+    r"(?im)^\s*i am going to.*$",
+    r"(?im)^\s*are you ready.*$",
+]
 
+def strip_narration(text: str) -> str:
+    if not text:
+        return text
+    out = text
+    for pat in _FORBIDDEN_LINE_PATTERNS:
+        out = re.sub(pat, "", out)
+    lines = [ln.rstrip() for ln in out.splitlines() if ln.strip()]
+    return "\n".join(lines).strip()
+
+# -----------------------
+# DB context builders
+# -----------------------
+
+def build_product_lines_list_context() -> str | None:
+    try:
+        with rfq_session() as db:
+            payload = {"productLinesList": list_product_lines(db, limit=200)}
+        return "RFQ_DATABASE_CONTEXT:\n" + json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+    except Exception:
+        return None
+
+def build_products_grouped_context() -> str | None:
+    try:
+        with rfq_session() as db:
+            payload = {"productsByLine": list_products_grouped_by_line(db, limit=2000)}
+        return "RFQ_DATABASE_CONTEXT:\n" + json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+    except Exception:
+        return None
+
+def build_product_line_detail_context(product_line_id: int) -> str | None:
+    try:
+        with rfq_session() as db:
+            line = get_product_line_by_id(db, int(product_line_id))
+            if not line:
+                return None
+            payload = {"productLineDetail": line}
+        return "RFQ_DATABASE_CONTEXT:\n" + json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+    except Exception:
+        return None
+
+def build_product_detail_context(product_query: str) -> str | None:
+    """
+    Option 4 step 2: search product by name and inject ALL columns result(s)
+    """
+    try:
+        with rfq_session() as db:
+            matches = search_products_by_name(db, product_query, limit=10)
+            if not matches:
+                return None
+            payload = {"productDetails": matches}
+        return "RFQ_DATABASE_CONTEXT:\n" + json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+    except Exception:
+        return None
+
+# -----------------------
+# Runner
+# -----------------------
 
 def run(message: str, session: dict) -> str:
     history = session.setdefault("history", [])
     history.append({"role": "user", "content": message})
 
-    msg = (message or "").strip().lower()
+    raw = (message or "").strip()
+    msg = raw.lower()
+    stage = (session.get("stage") or "select_lang").strip()
 
-    # 1) Mémoriser le choix quand user tape 3/4
-    if msg in {"3", "option 3", "3.", "3)"}:
-        session["pending_option"] = "3"
-    elif msg in {"4", "option 4", "4.", "4)"}:
-        session["pending_option"] = "4"
+    db_context = None
 
-    # 2) Injecter le contexte DB:
-    # - soit quand user tape 3/4
-    # - soit si on est déjà dans un flow 3/4 (pending_option)
-    db_context = build_rfq_context_for_chatbot(message)
+    # OPTION 3: waiting for numeric product_line_id
+    if stage == "await_product_line_id":
+        if raw.isdigit():
+            db_context = build_product_line_detail_context(int(raw))
+            if db_context:
+                session["stage"] = "in_module"
+        if not db_context:
+            # stay in same stage if invalid
+            session["stage"] = "await_product_line_id"
 
-    if not db_context and session.get("pending_option") in {"3", "4"}:
-        # Réinjecter la liste correspondant au flow en cours, même si user a écrit "ok"
-        db_context = build_rfq_context_for_chatbot(session["pending_option"])
+    # OPTION 4: waiting for product query/name (free text)
+    if not db_context and stage == "await_product_query":
+        if raw:
+            db_context = build_product_detail_context(raw)
+            if db_context:
+                session["stage"] = "in_module"
+            else:
+                # stay waiting if no match
+                session["stage"] = "await_product_query"
+
+    # Menu triggers (only if not already handled)
+    if not db_context:
+        is_opt3 = msg in {"3", "option 3", "3.", "3)"} or msg.startswith("3 ")
+        is_opt4 = msg in {"4", "option 4", "4.", "4)"} or msg.startswith("4 ")
+
+        if is_opt3:
+            session["stage"] = "await_product_line_id"
+            db_context = build_product_lines_list_context()
+
+        elif is_opt4:
+            session["stage"] = "await_product_query"
+            db_context = build_products_grouped_context()
 
     messages = [{"role": "system", "content": FINAL_SYSTEM_PROMPT}]
+
+    # lock language every turn if you store ui_lang in conversation
+    ui_lang = session.get("ui_lang") or "English"
+    messages.append({"role": "system", "content": f"UI_LANG={ui_lang}. Respond ONLY in UI_LANG."})
+
     if db_context:
         messages.append({"role": "system", "content": db_context})
+        messages.append({
+            "role": "system",
+            "content": (
+                "RFQ_DB_MODE=ON. Use ONLY RFQ_DATABASE_CONTEXT. "
+                "No narration. No confirmations. Answer immediately."
+            )
+        })
+
     messages += history
 
     try:
         res = client.chat.completions.create(model=MODEL, messages=messages)
         reply = res.choices[0].message.content or ""
+        reply = strip_narration(reply)
         history.append({"role": "assistant", "content": reply})
         return reply
     except Exception:
@@ -254,30 +286,58 @@ def run_stream(message: str, session: dict):
     history = session.setdefault("history", [])
     history.append({"role": "user", "content": message})
 
-    msg = (message or "").strip().lower()
+    raw = (message or "").strip()
+    msg = raw.lower()
+    stage = (session.get("stage") or "select_lang").strip()
 
-    if msg in {"3", "option 3", "3.", "3)"}:
-        session["pending_option"] = "3"
-    elif msg in {"4", "option 4", "4.", "4)"}:
-        session["pending_option"] = "4"
+    db_context = None
 
-    db_context = build_rfq_context_for_chatbot(message)
+    if stage == "await_product_line_id":
+        if raw.isdigit():
+            db_context = build_product_line_detail_context(int(raw))
+            if db_context:
+                session["stage"] = "in_module"
+        if not db_context:
+            session["stage"] = "await_product_line_id"
 
-    if not db_context and session.get("pending_option") in {"3", "4"}:
-        db_context = build_rfq_context_for_chatbot(session["pending_option"])
+    if not db_context and stage == "await_product_query":
+        if raw:
+            db_context = build_product_detail_context(raw)
+            if db_context:
+                session["stage"] = "in_module"
+            else:
+                session["stage"] = "await_product_query"
+
+    if not db_context:
+        is_opt3 = msg in {"3", "option 3", "3.", "3)"} or msg.startswith("3 ")
+        is_opt4 = msg in {"4", "option 4", "4.", "4)"} or msg.startswith("4 ")
+
+        if is_opt3:
+            session["stage"] = "await_product_line_id"
+            db_context = build_product_lines_list_context()
+        elif is_opt4:
+            session["stage"] = "await_product_query"
+            db_context = build_products_grouped_context()
 
     messages = [{"role": "system", "content": FINAL_SYSTEM_PROMPT}]
+    ui_lang = session.get("ui_lang") or "English"
+    messages.append({"role": "system", "content": f"UI_LANG={ui_lang}. Respond ONLY in UI_LANG."})
+
     if db_context:
         messages.append({"role": "system", "content": db_context})
+        messages.append({
+            "role": "system",
+            "content": (
+                "RFQ_DB_MODE=ON. Use ONLY RFQ_DATABASE_CONTEXT. "
+                "No narration. No confirmations. Answer immediately."
+            )
+        })
+
     messages += history
 
     parts = []
     try:
-        stream = client.chat.completions.create(
-            model=MODEL,
-            messages=messages,
-            stream=True,
-        )
+        stream = client.chat.completions.create(model=MODEL, messages=messages, stream=True)
         for chunk in stream:
             delta = chunk.choices[0].delta.content if chunk.choices else None
             if not delta:
@@ -289,5 +349,5 @@ def run_stream(message: str, session: dict):
         parts = [error_text]
         yield error_text
 
-    reply = "".join(parts)
+    reply = strip_narration("".join(parts))
     history.append({"role": "assistant", "content": reply})
