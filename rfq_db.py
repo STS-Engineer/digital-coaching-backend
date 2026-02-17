@@ -132,19 +132,21 @@ def list_product_lines(db: Session, limit: int = 100) -> list[dict]:
     return [dict(r) for r in rows]
 
 def get_product_line_by_id(db: Session, product_line_id: int) -> Optional[dict]:
-    name_col = _pick_col(db, "product_lines", ["product_line_name", "name"])
-    if not name_col:
+    cols = _get_columns(db, "product_lines")
+    if not cols:
         return None
 
+    select_cols = ", ".join([f"pl.{c}" for c in cols])
+
     sql = text(f"""
-        SELECT id, {name_col} AS name
-        FROM product_lines
-        WHERE id = :id
+        SELECT {select_cols}
+        FROM product_lines pl
+        WHERE pl.id = :id
         LIMIT 1
     """)
+
     row = db.execute(sql, {"id": int(product_line_id)}).mappings().first()
     return dict(row) if row else None
-
 
 def list_products(db: Session, limit: int = 100) -> list[dict]:
     name_col = _pick_col(db, "products", ["product_name", "name"])
@@ -190,20 +192,19 @@ def list_products_grouped_by_line(db: Session, limit: int = 2000) -> list[dict]:
     return [{"line_name": line, "products": products} for line, products in grouped.items()]
 
 def search_products_by_name(db: Session, product_name: str, limit: int = 50) -> list[dict]:
-    name_col = _pick_col(db, "products", ["product_name", "name"])
-    if not name_col:
+    cols = _get_columns(db, "products")
+    if not cols:
         return []
 
-    needle = (product_name or "").strip()
-    if not needle:
-        return []
+    select_cols = ", ".join([f"p.{c}" for c in cols])
 
     sql = text(f"""
-        SELECT id, {name_col} AS product_name
-        FROM products
-        WHERE {name_col} ILIKE :q
-        ORDER BY id
+        SELECT {select_cols}
+        FROM products p
+        WHERE p.product_name ILIKE :q
+        ORDER BY p.id
         LIMIT :limit
     """)
-    rows = db.execute(sql, {"q": f"%{needle}%", "limit": limit}).mappings().all()
+
+    rows = db.execute(sql, {"q": f"%{product_name}%", "limit": limit}).mappings().all()
     return [dict(r) for r in rows]
