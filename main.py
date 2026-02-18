@@ -202,7 +202,16 @@ def require_user(request: Request) -> str:
 def root():
     return {"status": "ok"}
 
-
+@app.get("/api/debug/whoami")
+def whoami(request: Request):
+    token = request.cookies.get(COOKIE_NAME)
+    return {
+        "origin": request.headers.get("origin"),
+        "has_cookie": bool(token),
+        "cookie_keys": list(request.cookies.keys()),
+        "auth": "ok" if token and decode_token(token) else "no",
+    }
+    
 @app.post("/api/auth/signup")
 async def signup(payload: SignupPayload, db: Session = Depends(get_db)):
     try:
