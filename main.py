@@ -650,7 +650,8 @@ async def chat_api_stream(payload: dict, request: Request, db: Session = Depends
         chat_cookie_name(bot_id),
         str(conv.id),
         path="/",
-        samesite="lax",
+        samesite="none",
+        secure=True,
         httponly=True,
         max_age=60 * 60 * 24 * 30,
     )
