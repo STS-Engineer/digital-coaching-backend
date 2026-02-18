@@ -98,12 +98,13 @@ def make_title(first_user_message: str) -> str:
     
     return title
 
+
 def sse_event(data: dict, event: str | None = None) -> str:
     payload = f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
     if event:
         payload = f"event: {event}\n" + payload
     return payload
-    
+
 def unique_title(db: Session, email: str, bot_id: str, base: str, exclude_id: int | None = None) -> str:
     base = (base or "New chat").strip()
     if not base:
@@ -190,28 +191,27 @@ class LoginPayload(BaseModel):
 class RenameChatPayload(BaseModel):
     title: str
 
+
+def get_bearer_token(request: Request) -> str | None:
+    auth_header = request.headers.get("authorization")
+    if not auth_header:
+        return None
+    parts = auth_header.split()
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1]
+    return None
+
 def require_user(request: Request) -> str:
-    token = request.cookies.get(COOKIE_NAME)
+    token = get_bearer_token(request) or request.cookies.get(COOKIE_NAME)
     email = decode_token(token) if token else None
     if not email:
         raise HTTPException(status_code=401, detail="Not authenticated")
     return email
 
-
 @app.get("/")
 def root():
     return {"status": "ok"}
 
-@app.get("/api/debug/whoami")
-def whoami(request: Request):
-    token = request.cookies.get(COOKIE_NAME)
-    return {
-        "origin": request.headers.get("origin"),
-        "has_cookie": bool(token),
-        "cookie_keys": list(request.cookies.keys()),
-        "auth": "ok" if token and decode_token(token) else "no",
-    }
-    
 @app.post("/api/auth/signup")
 async def signup(payload: SignupPayload, db: Session = Depends(get_db)):
     try:
@@ -250,21 +250,13 @@ async def signup(payload: SignupPayload, db: Session = Depends(get_db)):
         response = JSONResponse(
             {
                 "ok": True,
+                "token": token,
                 "user": {
                     "id": user.id,
                     "email": user.email,
                     "full_name": user.full_name,
                 },
             }
-        )
-        response.set_cookie(
-            COOKIE_NAME,
-            token,
-            httponly=True,
-            samesite="none",
-            secure=True,
-            max_age=60 * 60 * 8,
-            path="/",
         )
 
         return response
@@ -296,21 +288,13 @@ async def login(payload: LoginPayload, db: Session = Depends(get_db)):
         resp = JSONResponse(
             {
                 "ok": True,
+                "token": token,
                 "user": {
                     "id": user.id,
                     "email": user.email,
                     "full_name": user.full_name,
                 },
             }
-        )
-        resp.set_cookie(
-            key=COOKIE_NAME,
-            value=token,
-            httponly=True,
-            samesite="none",
-            secure=True,
-            path="/",
-            max_age=60 * 60 * 8,
         )
         return resp
 
@@ -423,16 +407,6 @@ async def chat_api(payload: dict, request: Request, db: Session = Depends(get_db
         "updated_at": updated_at
     })
     
-    resp.set_cookie(
-        chat_cookie_name(bot_id), 
-        str(conv.id),
-        path="/", 
-        samesite="none",
-        secure=True, 
-        httponly=True,
-        max_age=60*60*24*30
-    )
-    
     return resp
 
 
@@ -540,6 +514,7 @@ def history_delete(bot_id: str, chat_id: int, request: Request, db: Session = De
     if request.cookies.get(cookie_name) == str(chat_id):
         resp.delete_cookie(cookie_name, path="/")
     return resp
+
 
 @app.post("/api/chat/stream")
 async def chat_api_stream(payload: dict, request: Request, db: Session = Depends(get_db)):
@@ -655,20 +630,12 @@ async def chat_api_stream(payload: dict, request: Request, db: Session = Depends
     resp = StreamingResponse(event_stream(), media_type="text/event-stream")
     resp.headers["Cache-Control"] = "no-cache"
     resp.headers["X-Accel-Buffering"] = "no"
-    resp.set_cookie(
-        chat_cookie_name(bot_id),
-        str(conv.id),
-        path="/",
-        samesite="none",
-        secure=True,
-        httponly=True,
-        max_age=60 * 60 * 24 * 30,
-    )
     return resp
 
 @app.delete("/api/history/{bot_id}/{chat_id}")
 def history_delete_rest(bot_id: str, chat_id: int, request: Request, db: Session = Depends(get_db)):
     return history_delete(bot_id=bot_id, chat_id=chat_id, request=request, db=db)
+
 
 if __name__ == "__main__":
     import uvicorn
