@@ -319,6 +319,7 @@ async def chat_api(payload: dict, request: Request, db: Session = Depends(get_db
     bot_id = payload.get("bot_id")
     message = (payload.get("message") or "").strip()
     chat_id = payload.get("chat_id")
+    bot_mode = payload.get("bot_mode")
     
     if not bot_id or not message:
         raise HTTPException(status_code=400, detail="bot_id and message required")
@@ -371,6 +372,8 @@ async def chat_api(payload: dict, request: Request, db: Session = Depends(get_db
         "history": history,
         "ui_lang": conv.ui_lang,
         "stage": conv.stage,
+        "bot_mode": bot_mode,
+        "user_email": email,
     }
 
     # Appel bot
@@ -523,6 +526,7 @@ async def chat_api_stream(payload: dict, request: Request, db: Session = Depends
     bot_id = payload.get("bot_id")
     message = (payload.get("message") or "").strip()
     chat_id = payload.get("chat_id")
+    bot_mode = payload.get("bot_mode")
 
     if not bot_id or not message:
         raise HTTPException(status_code=400, detail="bot_id and message required")
@@ -568,6 +572,8 @@ async def chat_api_stream(payload: dict, request: Request, db: Session = Depends
         "history": history,
         "ui_lang": conv.ui_lang,
         "stage": conv.stage,
+        "bot_mode": bot_mode,
+        "user_email": email,
     }
 
     runner = BOTS[bot_id]["runner"]
