@@ -1,4 +1,4 @@
-from . import personal, formalization, training, product, email
+from . import personal, formalization, training, product, email, widget
 
 BOTS = {
     "personal": {
@@ -25,5 +25,10 @@ BOTS = {
         "label": "Email Writer",
         "runner": email.run,
         "runner_stream": email.run_stream,
+    },
+    "widget": {
+        "label": "Widget Assistant",
+        "runner": widget.run,
+        "runner_stream": None,
     },
 }
