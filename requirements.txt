@@ -2,13 +2,9 @@ fastapi
 uvicorn[standard]
 python-dotenv
 sqlalchemy
-psycopg[binary]
-passlib[bcrypt]
+psycopg2-binary
+bcrypt
 python-jose
 openai
-pydantic
-pydantic-settings
 python-docx
-psycopg2-binary
-psycopg2
-python-multipart
+pydantic
