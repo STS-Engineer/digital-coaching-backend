@@ -28,6 +28,194 @@ app.add_middleware(
 def utcnow():
     return datetime.now(timezone.utc)
 
+
+# ==============================
+# Password reset config
+# ==============================
+
+RESET_TOKEN_TTL_HOURS = int(os.getenv("RESET_TOKEN_TTL_HOURS", "1"))
+
+FRONTEND_RESET_URL = (os.getenv("RESET_PASSWORD_URL") or "https://digital-coaching.azurewebsites.net/reset-password").strip()
+
+SMTP_HOST = os.getenv("SMTP_HOST", "avocarbon-com.mail.protection.outlook.com").strip()
+SMTP_PORT = int(os.getenv("SMTP_PORT", "25"))
+EMAIL_FROM = os.getenv("EMAIL_FROM", "administration.STS@avocarbon.com").strip()
+EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "Administration STS").strip()
+SMTP_USE_TLS = (os.getenv("SMTP_USE_TLS") or "false").strip().lower() in {"1", "true", "yes"}
+
+
+# ==============================
+# Token helpers
+# ==============================
+
+def hash_reset_token(token: str) -> str:
+    secret = str(SECRET_KEY or "")
+    raw = f"{token}:{secret}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def build_reset_link(token: str, email: str | None = None) -> str:
+    base = (FRONTEND_RESET_URL or "").strip()
+    if not base:
+        raise ValueError("RESET_PASSWORD_URL is empty")
+
+    joiner = "&" if "?" in base else "?"
+    if email:
+        return f"{base}{joiner}token={quote(token)}&email={quote(email)}"
+    return f"{base}{joiner}token={quote(token)}"
+
+
+# ==============================
+# HTML Email Template (same style as your screenshot)
+# ==============================
+
+def _escape_html(s: str) -> str:
+    return (
+        (s or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
+
+
+def build_reset_html_body(reset_link: str, expires_hours: int, user_email: str | None = None) -> str:
+    # Outlook-friendly: mostly tables + inline styles
+    reset_link_escaped = _escape_html(reset_link)
+    email_escaped = _escape_html(user_email or "-")
+    received_on = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Password Reset</title>
+</head>
+<body style="margin:0;padding:0;background:#f3f5f7;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f3f5f7;">
+    <tr>
+      <td align="center" style="padding:32px 16px;">
+
+        <!-- Outer card -->
+        <table role="presentation" width="680" cellspacing="0" cellpadding="0" border="0"
+               style="max-width:680px;width:100%;background:#ffffff;border-radius:16px;border:1px solid #e9edf3;">
+          <tr>
+            <td style="padding:28px 24px 18px 24px;">
+
+              <!-- Title -->
+              <div style="font-family:Arial,Helvetica,sans-serif;font-size:24px;font-weight:700;color:#111827;text-align:center;">
+                Digital Coaching Password Reset
+              </div>
+
+              <div style="height:18px;"></div>
+
+              <!-- Inner panel (with left blue bar like screenshot) -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"
+                     style="border:1px solid #e6eaf0;border-radius:12px;overflow:hidden;">
+                <tr>
+                  <!-- blue bar -->
+                  <td width="8" style="background:#2563eb;">&nbsp;</td>
+
+                  <!-- content -->
+                  <td style="padding:18px 18px 10px 18px;background:#ffffff;">
+
+                    <div style="height:16px;"></div>
+
+                    <!-- Row -->
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+                      <tr>
+                        <td style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#111827;font-weight:700;">
+                          ❗&nbsp;&nbsp;Action required :
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding-top:10px;">
+                          <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#374151;line-height:1.6;
+                                      background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;
+                                      padding:12px 12px;">
+                            We received a request to reset your password. Use the button below to set a new password.
+                            <br><br>
+                            This link expires in <strong>{expires_hours} hour</strong>.
+                          </div>
+                        </td>
+                      </tr>
+                    </table>
+
+                    <div style="height:14px;"></div>
+
+                    <!-- Button -->
+                    <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="left">
+                      <tr>
+                        <td style="border-radius:8px;background:#2563eb;">
+                          <a href="{reset_link_escaped}"
+                             style="display:inline-block;padding:12px 18px;font-family:Arial,Helvetica,sans-serif;
+                                    font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:8px;">
+                            Reset Password
+                          </a>
+                        </td>
+                      </tr>
+                    </table>
+
+                    <div style="height:18px;clear:both;"></div>
+
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#6b7280;line-height:1.6;">
+                      If you did not request this, you can safely ignore this email.
+                    </div>
+
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Footer -->
+              <div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#9ca3af;text-align:center;margin-top:18px;">
+                © 2026 Digital Coaching 
+              </div>
+
+            </td>
+          </tr>
+        </table>
+
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
+
+
+# ==============================
+# Send email
+# ==============================
+
+def send_reset_email(to_email: str, reset_link: str) -> None:
+    subject = "Reset your Digital Coaching password"
+
+    text_body = (
+        "Hello,\n\n"
+        "We received a request to reset your password.\n"
+        f"Click this link to reset it:\n{reset_link}\n\n"
+        f"This link expires in {RESET_TOKEN_TTL_HOURS} hours.\n\n"
+        "If you did not request this, please ignore this email.\n\n"
+        "Digital Coaching Support"
+    )
+
+    html_body = build_reset_html_body(reset_link, RESET_TOKEN_TTL_HOURS, user_email=to_email)
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = formataddr((EMAIL_FROM_NAME, EMAIL_FROM))
+    msg["To"] = to_email
+
+    msg.attach(MIMEText(text_body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+        if SMTP_USE_TLS:
+            context = ssl.create_default_context()
+            server.starttls(context=context)
+        server.sendmail(EMAIL_FROM, [to_email], msg.as_string())
+
 def is_meaningful_message(text: str) -> bool:
     t = " ".join((text or "").strip().split())
     if not t:
