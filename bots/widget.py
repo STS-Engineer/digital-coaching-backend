@@ -11,9 +11,9 @@ from groq_client import client, MODEL
 SYSTEM_PROMPT = (
     "You are a product support assistant for the Digital Coaching app. "
     "Your scope is to answer questions about how the app works: chat usage, bots, chat history, troubleshooting, and human support requests (including sending support emails). "
-    "If the user reports a technical problem or asks for human support, "
-    "ask them to describe the issue in detail and tell them you will send it "
-    "to technical support at ons.ghariani@avocarbon.com. "
+    "If the user asks for human support or reports a technical issue, "
+    "ask them ONCE to describe the issue in detail (what they did, what they expected, and any error message). "
+    "After they provide the details, do NOT ask again. The system will send it to technical support. "
     "If the user says they have a question about something and asks which bot to use, "
     "guide them to the best of the five available bots based on their topic. "
     "When the user asks which bot to use, recommend the best bot and explain why. "
@@ -42,41 +42,6 @@ SMTP_PORT = 25
 EMAIL_FROM_NAME = "Administration STS"
 EMAIL_FROM = "administration.STS@avocarbon.com"
 SUPPORT_EMAIL = "ons.ghariani@avocarbon.com"
-
-
-def wants_human_support(text: str) -> bool:
-    t = (text or "").lower()
-    keywords = [
-        "support humain",
-        "support technique",
-        "assistance humaine",
-        "aide humaine",
-        "contacter le support",
-        "envoyer un mail",
-        "envoyer un email",
-        "envoyer un e-mail",
-        "send email",
-        "send mail",
-        "email support",
-        "mail support",
-        "contact support",
-        "human support",
-        "technical support",
-        "helpdesk",
-        "ticket",
-        "bug",
-        "erreur",
-        "error",
-        "not working",
-        "ne fonctionne pas",
-        "ça marche pas",
-        "probleme technique",
-        "problème technique",
-        "escalade",
-        "réclamation",
-        "reclamation",
-    ]
-    return any(k in t for k in keywords)
 
 
 def detect_language(text: str) -> str:
@@ -446,50 +411,17 @@ def polish_description(details: str, lang: str) -> str:
 def resolve_system_prompt(session: dict) -> str:
     return SYSTEM_PROMPT
 
-
 def run(message: str, session: dict) -> str:
     history = session.setdefault("history", [])
     history.append({"role": "user", "content": message})
 
-    stage = (session.get("stage") or "").strip().lower()
+    stage = session.get("stage", "idle")
     user_email = session.get("user_email") or ""
-
     lang = detect_language(message)
 
-    ask_details = localize_template(
-        "Sure. Please describe the problem you need human support for "
-        "(what you did, what you expected, and any error message). "
-        "I will send it to technical support.",
-        "D'accord. Décrivez le problème pour lequel vous avez besoin d'un support humain "
-        "(ce que vous avez fait, ce que vous attendiez, et tout message d'erreur). "
-        "Je vais l'envoyer au support technique.",
-        message,
-        lang,
-    )
-    details_empty = localize_template(
-        "Please describe the issue so I can send it to support.",
-        "Merci de décrire le problème pour que je puisse transmettre au support.",
-        message,
-        lang,
-    )
-    confirm_sent = localize_template(
-        f"Thanks. Your request has been sent to technical support ({SUPPORT_EMAIL}).",
-        f"Merci. Votre demande a été transmise au support technique ({SUPPORT_EMAIL}).",
-        message,
-        lang,
-    )
-    send_failed = localize_template(
-        f"Sorry, sending to support failed. Please contact {SUPPORT_EMAIL} directly.",
-        f"Désolé, l'envoi au support a échoué. Veuillez contacter {SUPPORT_EMAIL} directement.",
-        message,
-        lang,
-    )
-
-    if stage in {"support_waiting_details", "support_waiting_subject"}:
-        details = (message or "").strip()
-        if not details:
-            return details_empty
-
+    # If we are waiting for details → send email immediately
+    if stage == "support_waiting_details":
+        details = message.strip()
         description = polish_description(details, lang)
         subject = build_subject(description, lang)
 
@@ -501,17 +433,14 @@ def run(message: str, session: dict) -> str:
         )
 
         session["stage"] = "idle"
-        session.pop("support_request_text", None)
 
-        return confirm_sent if ok else send_failed
+        return (
+            f"Thanks. Your request has been sent to technical support ({SUPPORT_EMAIL})."
+            if ok
+            else f"Sending failed. Please contact {SUPPORT_EMAIL} directly."
+        )
 
-    if wants_human_support(message):
-        session["stage"] = "support_waiting_details"
-        session["support_request_text"] = message
-        return ask_details
-
-    base_system = resolve_system_prompt(session)
-    system_prompt = base_system + f"\n\nIMPORTANT: Respond ONLY in {lang}. Do not include any other language."
+    system_prompt = resolve_system_prompt(session)
     messages = [{"role": "system", "content": system_prompt}] + history
 
     try:
@@ -521,6 +450,11 @@ def run(message: str, session: dict) -> str:
         )
         reply = (res.choices[0].message.content or "").strip()
         history.append({"role": "assistant", "content": reply})
+
+        if "describe the issue" in reply.lower() or "décrivez le problème" in reply.lower():
+            session["stage"] = "support_waiting_details"
+
         return reply
+
     except Exception:
-        return "I apologize for the technical issue. Please try again or contact support."
+        return "Technical issue. Please try again."
