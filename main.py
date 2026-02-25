@@ -1,7 +1,15 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import os
 import json
 import re
+import secrets
+import hashlib
+import smtplib
+import ssl
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.utils import formataddr
+from urllib.parse import quote
 
 from fastapi import FastAPI, Request, Depends, HTTPException, Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -9,9 +17,16 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
-from auth import COOKIE_NAME, decode_token, create_token, hash_password, verify_password
+from auth import COOKIE_NAME, SECRET_KEY, decode_token, create_token, hash_password, verify_password
 from bots import BOTS
-from db import ChatbotUser, get_db, get_chatbot_session, Conversation, Message
+from db import (
+    ChatbotUser,
+    PasswordResetToken,
+    get_db,
+    get_chatbot_session,
+    Conversation,
+    Message,
+)
 
 from fastapi.middleware.cors import CORSMiddleware
 app = FastAPI()
@@ -27,7 +42,6 @@ app.add_middleware(
 
 def utcnow():
     return datetime.now(timezone.utc)
-
 
 # ==============================
 # Password reset config
@@ -215,6 +229,7 @@ def send_reset_email(to_email: str, reset_link: str) -> None:
             context = ssl.create_default_context()
             server.starttls(context=context)
         server.sendmail(EMAIL_FROM, [to_email], msg.as_string())
+
 
 def is_meaningful_message(text: str) -> bool:
     t = " ".join((text or "").strip().split())
@@ -460,6 +475,15 @@ class LoginPayload(BaseModel):
     email: str
     password: str
 
+class ForgotPasswordPayload(BaseModel):
+    email: str
+
+class ResetPasswordPayload(BaseModel):
+    token: str
+    password: str
+    confirm_password: str
+    email: str | None = None
+
 class RenameChatPayload(BaseModel):
     title: str
 
@@ -503,6 +527,8 @@ async def signup(payload: SignupPayload, db: Session = Depends(get_db)):
             raise HTTPException(status_code=400, detail="full_name too short")
         if "@" not in email:
             raise HTTPException(status_code=400, detail="invalid email")
+        if not email.endswith("@avocarbon.com"):
+            raise HTTPException(status_code=400, detail="email must be @avocarbon.com")
         if len(password) < 8:
             raise HTTPException(status_code=400, detail="password too short")
         if password != confirm:
@@ -621,6 +647,110 @@ async def login(payload: LoginPayload, db: Session = Depends(get_db)):
     except Exception as e:
         print(f"Login error: {e}")
         raise HTTPException(status_code=500, detail="server_error")
+
+@app.post("/api/auth/forgot-password")
+def forgot_password(payload: ForgotPasswordPayload, db: Session = Depends(get_db)):
+    email = (payload.email or "").strip().lower()
+
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required")
+    if "@" not in email:
+        raise HTTPException(status_code=400, detail="Invalid email")
+
+    chat_db = get_chatbot_session()
+    try:
+        user = chat_db.query(ChatbotUser).filter(ChatbotUser.email == email).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User does not exist")
+
+        now = utcnow()
+        # Invalidate previous tokens (main DB)
+        db.query(PasswordResetToken).filter(
+            PasswordResetToken.email == email,
+            PasswordResetToken.used_at == None,
+        ).update({PasswordResetToken.used_at: now}, synchronize_session=False)
+
+        token = secrets.token_urlsafe(32)
+        token_hash = hash_reset_token(token)
+        expires_at = now + timedelta(hours=RESET_TOKEN_TTL_HOURS)
+
+        record = PasswordResetToken(
+            user_id=user.id,
+            email=email,
+            token_hash=token_hash,
+            expires_at=expires_at,
+        )
+        db.add(record)
+        db.commit()
+
+        try:
+            reset_link = build_reset_link(token=token, email=email)
+        except ValueError:
+            raise HTTPException(status_code=500, detail="Reset link configuration missing")
+        try:
+            send_reset_email(email, reset_link)
+        except Exception as e:
+            print(f"Reset email send failed: {e}")
+            raise HTTPException(status_code=500, detail="Failed to send reset email")
+
+        return {"ok": True}
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"Forgot password error: {e}")
+        raise HTTPException(status_code=500, detail="server_error")
+    finally:
+        chat_db.close()
+
+@app.post("/api/auth/reset-password")
+def reset_password(payload: ResetPasswordPayload, db: Session = Depends(get_db)):
+    token = (payload.token or "").strip()
+    password = payload.password or ""
+    confirm = payload.confirm_password or ""
+    email = (payload.email or "").strip().lower() if payload.email else None
+
+    if not token:
+        raise HTTPException(status_code=400, detail="token required")
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="password too short")
+    if password != confirm:
+        raise HTTPException(status_code=400, detail="password_mismatch")
+
+    token_hash = hash_reset_token(token)
+    chat_db = get_chatbot_session()
+    try:
+        now = utcnow()
+        record = db.query(PasswordResetToken).filter(
+            PasswordResetToken.token_hash == token_hash,
+            PasswordResetToken.used_at == None,
+            PasswordResetToken.expires_at > now,
+        ).first()
+        if not record:
+            raise HTTPException(status_code=400, detail="invalid_or_expired_token")
+
+        user = chat_db.query(ChatbotUser).filter(ChatbotUser.id == record.user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="user_not_found")
+        if email and user.email.lower() != email:
+            raise HTTPException(status_code=400, detail="email_mismatch")
+
+        user.password_hash = hash_password(password)
+        record.used_at = now
+        chat_db.commit()
+        db.commit()
+
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        chat_db.rollback()
+        db.rollback()
+        print(f"Reset password error: {e}")
+        raise HTTPException(status_code=500, detail="server_error")
+    finally:
+        chat_db.close()
 
 @app.post("/auth/logout")
 def logout():
