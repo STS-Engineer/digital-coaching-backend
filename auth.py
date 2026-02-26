@@ -3,6 +3,7 @@ import os
 import base64
 import hashlib
 import logging
+import secrets
 from datetime import datetime, timedelta, timezone
 from jose import jwt, JWTError
 import bcrypt
@@ -19,6 +20,8 @@ if not SECRET_KEY:
     
 ALGORITHM = "HS256"
 COOKIE_NAME = "access_token"
+REFRESH_COOKIE_NAME = os.getenv("REFRESH_COOKIE_NAME", "refresh_token")
+ACCESS_TOKEN_TTL_MINUTES = int(os.getenv("ACCESS_TOKEN_TTL_MINUTES", "15"))
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +37,6 @@ def _normalize_password(password: str) -> str:
     return password
 
 def hash_password(password: str) -> str:
-    """Hash un mot de passe avec bcrypt (sans passlib)."""
     normalized = _normalize_password(password)
     normalized_bytes = normalized.encode("utf-8")
     if len(normalized_bytes) > 72:
@@ -44,7 +46,6 @@ def hash_password(password: str) -> str:
     return hashed.decode("utf-8")
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """V?rifie un mot de passe avec bcrypt (sans passlib)."""
     try:
         normalized = _normalize_password(plain_password)
         normalized_bytes = normalized.encode("utf-8")
@@ -54,25 +55,34 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         logger.error(f"Password verification error: {e}")
         return False
 
-def create_token(subject_email: str) -> str:
-    """Crée un token JWT"""
-    exp = datetime.now(timezone.utc) + timedelta(hours=8)
-    
-    # Assurez-vous que la clé est une chaîne
+def create_access_token(subject_email: str) -> str:
+    exp = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_TTL_MINUTES)
+
+    # Assurez-vous que la cl? est une cha?ne
     key = str(SECRET_KEY)
-    
-    # Debug
-    print(f"🔐 Création token pour: {subject_email}")
-    print(f"🔐 Clé utilisée: {key[:10]}... (longueur: {len(key)})")
-    
+
     return jwt.encode(
-        {"sub": subject_email, "exp": exp}, 
-        key, 
-        algorithm=ALGORITHM
+        {"sub": subject_email, "exp": exp, "typ": "access"},
+        key,
+        algorithm=ALGORITHM,
     )
 
+
+def create_token(subject_email: str) -> str:
+    return create_access_token(subject_email)
+
+
+def generate_refresh_token() -> str:
+    return secrets.token_urlsafe(64)
+
+
+def hash_refresh_token(token: str) -> str:
+    key = str(SECRET_KEY)
+    raw = f"{token}:{key}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def decode_token(token: str) -> str | None:
-    """Décode et valide un token JWT"""
     try:
         key = str(SECRET_KEY)
         payload = jwt.decode(token, key, algorithms=[ALGORITHM])
