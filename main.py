@@ -17,11 +17,12 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
-from auth import COOKIE_NAME, SECRET_KEY, decode_token, create_token, hash_password, verify_password
+from auth import COOKIE_NAME, REFRESH_COOKIE_NAME, SECRET_KEY, decode_token, create_access_token, generate_refresh_token, hash_refresh_token, hash_password, verify_password
 from bots import BOTS
 from db import (
     ChatbotUser,
     PasswordResetToken,
+    RefreshToken,
     get_db,
     get_chatbot_session,
     Conversation,
@@ -31,10 +32,10 @@ from db import (
 from fastapi.middleware.cors import CORSMiddleware
 app = FastAPI()
 
-# Configuration CORS
+# Configuration CORS 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://digital-coaching.azurewebsites.net"],  
+    allow_origins=["https://digital-coaching.azurewebsites.net"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -48,6 +49,11 @@ def utcnow():
 # ==============================
 
 RESET_TOKEN_TTL_HOURS = int(os.getenv("RESET_TOKEN_TTL_HOURS", "1"))
+
+REFRESH_TOKEN_TTL_DAYS = int(os.getenv("REFRESH_TOKEN_TTL_DAYS", "7"))
+REFRESH_COOKIE_SECURE = (os.getenv("REFRESH_COOKIE_SECURE") or "true").strip().lower() in {"1", "true", "yes"}
+REFRESH_COOKIE_SAMESITE = (os.getenv("REFRESH_COOKIE_SAMESITE") or "none").strip().lower()
+REFRESH_COOKIE_MAX_AGE = REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60
 
 FRONTEND_RESET_URL = (os.getenv("RESET_PASSWORD_URL") or "https://digital-coaching.azurewebsites.net/reset-password").strip()
 
@@ -77,6 +83,32 @@ def build_reset_link(token: str, email: str | None = None) -> str:
     if email:
         return f"{base}{joiner}token={quote(token)}&email={quote(email)}"
     return f"{base}{joiner}token={quote(token)}"
+
+
+def set_refresh_cookie(resp: Response, token: str, expires_at: datetime):
+    resp.set_cookie(
+        key=REFRESH_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        secure=REFRESH_COOKIE_SECURE,
+        samesite=REFRESH_COOKIE_SAMESITE,
+        max_age=REFRESH_COOKIE_MAX_AGE,
+        expires=expires_at,
+        path="/",
+    )
+
+
+def clear_refresh_cookie(resp: Response):
+    resp.delete_cookie(REFRESH_COOKIE_NAME, path="/")
+
+
+def create_refresh_token_record(db: Session, email: str, user_id) -> tuple[str, datetime]:
+    refresh_token = generate_refresh_token()
+    expires_at = utcnow() + timedelta(days=REFRESH_TOKEN_TTL_DAYS)
+    token_hash = hash_refresh_token(refresh_token)
+    db.add(RefreshToken(user_id=user_id, email=email, token_hash=token_hash, expires_at=expires_at))
+    db.commit()
+    return refresh_token, expires_at
 
 
 # ==============================
@@ -571,12 +603,18 @@ async def signup(payload: SignupPayload, db: Session = Depends(get_db)):
         finally:
             chat_db.close()
 
-        token = create_token(email)
+        access_token = create_access_token(email)
+        try:
+            refresh_token, refresh_expires = create_refresh_token_record(db, email, chat_user_id)
+        except Exception as e:
+            db.rollback()
+            print(f"Refresh token error: {e}")
+            raise HTTPException(status_code=500, detail="server_error")
 
         response = JSONResponse(
             {
                 "ok": True,
-                "token": token,
+                "token": access_token,
                 "user": {
                     "id": str(chat_user_id),
                     "email": email,
@@ -585,6 +623,7 @@ async def signup(payload: SignupPayload, db: Session = Depends(get_db)):
             }
         )
 
+        set_refresh_cookie(response, refresh_token, refresh_expires)
         return response
 
     except HTTPException:
@@ -628,11 +667,18 @@ async def login(payload: LoginPayload, db: Session = Depends(get_db)):
         finally:
             chat_db.close()
 
-        token = create_token(email)
+        access_token = create_access_token(email)
+        try:
+            refresh_token, refresh_expires = create_refresh_token_record(db, email, chat_user_id)
+        except Exception as e:
+            db.rollback()
+            print(f"Refresh token error: {e}")
+            raise HTTPException(status_code=500, detail="server_error")
+
         resp = JSONResponse(
             {
                 "ok": True,
-                "token": token,
+                "token": access_token,
                 "user": {
                     "id": str(chat_user_id),
                     "email": email,
@@ -640,6 +686,7 @@ async def login(payload: LoginPayload, db: Session = Depends(get_db)):
                 },
             }
         )
+        set_refresh_cookie(resp, refresh_token, refresh_expires)
         return resp
 
     except HTTPException:
@@ -648,7 +695,39 @@ async def login(payload: LoginPayload, db: Session = Depends(get_db)):
         print(f"Login error: {e}")
         raise HTTPException(status_code=500, detail="server_error")
 
+@app.post("/api/auth/refresh")
+def refresh_token(request: Request, db: Session = Depends(get_db)):
+    token = request.cookies.get(REFRESH_COOKIE_NAME)
+    if not token:
+        raise HTTPException(status_code=401, detail="refresh_token_missing")
+
+    token_hash = hash_refresh_token(token)
+    now = utcnow()
+    record = (
+        db.query(RefreshToken)
+        .filter(RefreshToken.token_hash == token_hash)
+        .first()
+    )
+
+    if not record or record.revoked_at is not None or record.expires_at <= now:
+        raise HTTPException(status_code=401, detail="invalid_refresh_token")
+
+    # Rotate refresh token
+    record.revoked_at = now
+    new_refresh = generate_refresh_token()
+    new_hash = hash_refresh_token(new_refresh)
+    new_expires = now + timedelta(days=REFRESH_TOKEN_TTL_DAYS)
+    db.add(RefreshToken(user_id=record.user_id, email=record.email, token_hash=new_hash, expires_at=new_expires))
+    db.commit()
+
+    access_token = create_access_token(record.email)
+    resp = JSONResponse({"ok": True, "token": access_token})
+    set_refresh_cookie(resp, new_refresh, new_expires)
+    return resp
+
+
 @app.post("/api/auth/forgot-password")
+
 def forgot_password(payload: ForgotPasswordPayload, db: Session = Depends(get_db)):
     email = (payload.email or "").strip().lower()
 
@@ -753,9 +832,24 @@ def reset_password(payload: ResetPasswordPayload, db: Session = Depends(get_db))
         chat_db.close()
 
 @app.post("/auth/logout")
-def logout():
+def logout(request: Request, db: Session = Depends(get_db)):
+    token = request.cookies.get(REFRESH_COOKIE_NAME)
+    if token:
+        token_hash = hash_refresh_token(token)
+        now = utcnow()
+        try:
+            db.query(RefreshToken).filter(
+                RefreshToken.token_hash == token_hash,
+                RefreshToken.revoked_at == None,
+            ).update({RefreshToken.revoked_at: now}, synchronize_session=False)
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            print(f"Logout refresh token revoke error: {e}")
+
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(COOKIE_NAME, path="/")
+    clear_refresh_cookie(resp)
     return resp
 
 
