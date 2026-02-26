@@ -108,6 +108,17 @@ class PasswordResetToken(Base):
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True, nullable=False)
+    email: Mapped[str] = mapped_column(Text, index=True, nullable=False)
+    token_hash: Mapped[str] = mapped_column(Text, unique=True, nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
 class Conversation(Base):
     __tablename__ = "conversations"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)  # UUID as text for simplicity
