@@ -97,10 +97,14 @@ def set_refresh_cookie(resp: Response, token: str, expires_at: datetime):
         path="/",
     )
 
-
 def clear_refresh_cookie(resp: Response):
-    resp.delete_cookie(REFRESH_COOKIE_NAME, path="/")
-
+    resp.delete_cookie(
+        key=REFRESH_COOKIE_NAME,
+        path="/",
+        secure=REFRESH_COOKIE_SECURE,
+        samesite=REFRESH_COOKIE_SAMESITE,
+        httponly=True,
+    )
 
 def create_refresh_token_record(db: Session, email: str, user_id) -> tuple[str, datetime]:
     refresh_token = generate_refresh_token()
