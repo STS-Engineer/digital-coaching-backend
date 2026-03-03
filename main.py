@@ -19,6 +19,7 @@ from sqlalchemy import func
 
 from auth import COOKIE_NAME, REFRESH_COOKIE_NAME, SECRET_KEY, decode_token, create_access_token, generate_refresh_token, hash_refresh_token, hash_password, verify_password
 from bots import BOTS
+from openai_client import client as oai_client, MODEL as OAI_MODEL
 from db import (
     ChatbotUser,
     PasswordResetToken,
