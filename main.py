@@ -283,60 +283,52 @@ def is_meaningful_message(text: str) -> bool:
         return False
     return True
 
-def summarize_title(text: str, max_words: int = 4) -> str:
+def normalize_title(text: str | None) -> str:
     t = " ".join((text or "").strip().split())
-    if not t:
-        return "New chat"
-    
-    text_lower = t.lower()
-    
-    # Découper en mots
-    words = re.findall(r'\b[a-zà-ÿ]{3,}\b', text_lower)
-    
-    # Stopwords basiques
-    stopwords = {
-        "avec", "dans", "pour", "mon", "ma", "mes", "ton", "ta", "tes", "son", "sa", "ses",
-        "un", "une", "le", "la", "les", "des", "du", "de", "au", "aux", "sur", "sous", 
-        "par", "entre", "pendant", "depuis", "chez", "vers", "à",
-        "je", "tu", "il", "elle", "nous", "vous", "ils", "elles", "ce", "cette", "ces",
-        "et", "ou", "mais", "donc", "car", "ni", "or", "que", "qui", "quoi", "où", 
-        "est", "sont", "suis", "es", "sommes", "êtes", "ai", "as", "a", "avons", "avez", "ont",
-        "très", "peu", "plus", "moins", "aussi", "alors", "puis", "ainsi",
-    }
-    
-    # Filtrer les stopwords
-    meaningful_words = [w for w in words if w not in stopwords]
-    
-    # Si pas assez de mots significatifs
-    if len(meaningful_words) < 2:
-        # Prendre les premiers mots
-        first_words = words[:max_words]
-        if not first_words:
-            return "New chat"
-        title = " ".join(first_words).capitalize()
-        return title
-    
-    # Prendre les 2-4 premiers mots significatifs
-    selected_words = meaningful_words[:max_words]
-    
-    # Former le titre
-    title = " ".join(selected_words).capitalize()
-    
-    return title
+    return t or "New chat"
 
 def make_title(first_user_message: str) -> str:
     t = " ".join((first_user_message or "").strip().split())
     if not is_meaningful_message(t):
         return "New chat"
-    
-    title = summarize_title(t)
-    
-    # Limiter à 4 mots maximum
-    words = title.split()
-    if len(words) > 4:
-        title = " ".join(words[:4])
-    
-    return title
+
+    title = generate_title_llm(t, max_words=4)
+    if title:
+        return title
+
+    words = t.split()
+    return " ".join(words[:4]) if words else "New chat"
+
+def generate_title_llm(text: str, max_words: int = 4) -> str | None:
+    system = (
+        "You create short chat titles. "
+        f"Return a concise title of at most {max_words} words. "
+        "No quotes. No punctuation at the end. "
+        "Keep the language of the user's message."
+    )
+    user = f"User message:\n{text}\n\nTitle:"
+    try:
+        res = oai_client.chat.completions.create(
+            model=OAI_MODEL,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.2,
+            max_tokens=16,
+        )
+        raw = (res.choices[0].message.content or "").strip()
+        raw = raw.strip('"\'').strip()
+        raw = raw.rstrip(" .,:;")
+        if not raw:
+            return None
+        words = raw.split()
+        if len(words) > max_words:
+            raw = " ".join(words[:max_words])
+        return raw
+    except Exception as exc:
+        print(f"[TITLE] LLM title generation failed: {exc}")
+        return None
 
 def normalize_username(raw: str) -> str:
     base = re.sub(r"[^a-zA-Z0-9_]", "", (raw or "").strip().lower())
@@ -361,7 +353,6 @@ def unique_username(db: Session, base: str) -> str:
         if not exists:
             return candidate
         suffix += 1
-
 
 def sse_event(data: dict, event: str | None = None) -> str:
     payload = f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
