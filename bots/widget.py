@@ -6,7 +6,7 @@ from email.utils import formataddr
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
-from groq_client import client, MODEL
+from openai_client import client, MODEL
 
 SYSTEM_PROMPT = (
     "You are a product support assistant for the Digital Coaching app. "
