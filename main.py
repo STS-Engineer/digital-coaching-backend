@@ -98,14 +98,10 @@ def set_refresh_cookie(resp: Response, token: str, expires_at: datetime):
         path="/",
     )
 
+
 def clear_refresh_cookie(resp: Response):
-    resp.delete_cookie(
-        key=REFRESH_COOKIE_NAME,
-        path="/",
-        secure=REFRESH_COOKIE_SECURE,
-        samesite=REFRESH_COOKIE_SAMESITE,
-        httponly=True,
-    )
+    resp.delete_cookie(REFRESH_COOKIE_NAME, path="/")
+
 
 def create_refresh_token_record(db: Session, email: str, user_id) -> tuple[str, datetime]:
     refresh_token = generate_refresh_token()
@@ -117,7 +113,7 @@ def create_refresh_token_record(db: Session, email: str, user_id) -> tuple[str, 
 
 
 # ==============================
-# HTML Email Template (same style as your screenshot)
+# HTML Email Template 
 # ==============================
 
 def _escape_html(s: str) -> str:
@@ -413,7 +409,7 @@ def build_history_items(convs):
         items.append(
             {
                 "chat_id": c.id,
-                "title": summarize_title(c.title or "New chat"),
+                "title": normalize_title(c.title),
                 "updated_at": ts.isoformat(),
             }
         )
@@ -957,7 +953,7 @@ async def chat_api(payload: dict, request: Request, db: Session = Depends(get_db
     
     print(f"[DEBUG] Conversation finalisée: {conv.id}, Titre: {conv.title}")
 
-    title = summarize_title(conv.title or "New chat")
+    title = normalize_title(conv.title)
     updated_at = (conv.updated_at or utcnow()).isoformat()
     
     # Mettre à jour le cookie avec l'ID de la conversation
@@ -1038,7 +1034,7 @@ def history_get(bot_id: str, chat_id: int, request: Request, db: Session = Depen
             }
             for m in msgs
         ],
-        "title": summarize_title(conv.title or "New chat"),
+        "title": normalize_title(conv.title),
         "updated_at": conv.updated_at.isoformat() if conv.updated_at else None
     }
 
@@ -1082,7 +1078,7 @@ def history_rename(bot_id: str, chat_id: int, payload: RenameChatPayload, reques
     return {
         "ok": True,
         "chat_id": conv.id,
-        "title": summarize_title(conv.title or "New chat"),
+        "title": normalize_title(conv.title),
         "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
         "full_title": conv.title,
     }
@@ -1486,7 +1482,7 @@ async def chat_api_stream(payload: dict, request: Request, db: Session = Depends
 
             db.commit()
 
-            title = summarize_title(conv.title or "New chat")
+            title = normalize_title(conv.title)
             updated_at = (conv.updated_at or utcnow()).isoformat()
             yield sse_event(
                 {"chat_id": conv.id, "title": title, "updated_at": updated_at},
