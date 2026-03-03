@@ -6,7 +6,8 @@ from email.utils import formataddr
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
-from openai_client import client, MODEL
+from dotenv import load_dotenv
+from groq_client import client, MODEL
 
 SYSTEM_PROMPT = (
     "You are a product support assistant for the Digital Coaching app. "
@@ -42,12 +43,12 @@ SYSTEM_PROMPT = (
     "Keep responses professional."
 )
 
-SMTP_HOST = "avocarbon-com.mail.protection.outlook.com"
-SMTP_PORT = 25
-EMAIL_FROM_NAME = "Administration STS"
-EMAIL_FROM = "administration.STS@avocarbon.com"
-SUPPORT_EMAIL = "ons.ghariani@avocarbon.com"
+SMTP_HOST = os.getenv("SMTP_HOST", "avocarbon-com.mail.protection.outlook.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "25"))
 
+EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "Administration STS")
+EMAIL_FROM = os.getenv("EMAIL_FROM", "administration.STS@avocarbon.com")
+SUPPORT_EMAIL = os.getenv("SUPPORT_EMAIL", "ons.ghariani@avocarbon.com")
 
 def detect_language(text: str) -> str:
     """
@@ -417,8 +418,8 @@ def resolve_system_prompt(session: dict) -> str:
     return SYSTEM_PROMPT
 
 def run(message: str, session: dict) -> str:
-    history = session.setdefault("history", [])
-    history.append({"role": "user", "content": message})
+    # Widget should be stateless: do not retain chat history.
+    session.pop("history", None)
 
     stage = session.get("stage", "idle")
     user_email = session.get("user_email") or ""
@@ -446,7 +447,10 @@ def run(message: str, session: dict) -> str:
         )
 
     system_prompt = resolve_system_prompt(session)
-    messages = [{"role": "system", "content": system_prompt}] + history
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": message},
+    ]
 
     try:
         res = client.chat.completions.create(
@@ -454,7 +458,6 @@ def run(message: str, session: dict) -> str:
             messages=messages,
         )
         reply = (res.choices[0].message.content or "").strip()
-        history.append({"role": "assistant", "content": reply})
 
         if "describe the issue" in reply.lower() or "décrivez le problème" in reply.lower():
             session["stage"] = "support_waiting_details"
