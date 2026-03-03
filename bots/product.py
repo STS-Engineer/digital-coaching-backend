@@ -87,7 +87,7 @@ The assistant MUST:
 - Apply ONLY the instructions explicitly present in the loaded content.
 - Ask the user for clarification if any required information is missing.
 
-If the module content is not present/available in the current conversation, the assistant MUST ask the user to paste or upload the relevant module content before proceeding.
+The module content is provided below in this system prompt. Do NOT ask the user to paste or upload it.
 
 ## 6. Mandatory Context Display (Before Interaction)
 
@@ -140,7 +140,13 @@ def load_docx_text(path: Path) -> str:
     return "\n".join(parts)
 
 DOC_TEXT = load_docx_text(DOC_PATH)
-FINAL_SYSTEM_PROMPT = SYSTEM_PROMPT + "\n\n" + DOC_TEXT
+FINAL_SYSTEM_PROMPT = (
+    SYSTEM_PROMPT
+    + "\n\n-----------------------------------------------------------------------\n"
+    + "## LOADED MODULE CONTENT (DOCX)\n"
+    + "-----------------------------------------------------------------------\n"
+    + DOC_TEXT
+)
 
 # --- Anti-narration output cleaning (safety net) ---
 _FORBIDDEN_LINE_PATTERNS = [
