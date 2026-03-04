@@ -298,10 +298,12 @@ def make_title(first_user_message: str) -> str:
 
 def generate_title_llm(text: str, max_words: int = 4) -> str | None:
     system = (
-        "You create short chat titles. "
-        f"Return a concise title of at most {max_words} words. "
+        "You are a title generator. Create a short, concise title (maximum "
+        f"{max_words} words) that summarizes the user's question or topic.\n\n"
+        "IMPORTANT: DO NOT repeat the user's words. Generate a NEW brief title.\n\n"
         "No quotes. No punctuation at the end. "
         "Keep the language of the user's message."
+        "NEVER just copy the beginning of their message"
     )
     user = f"User message:\n{text}\n\nTitle:"
     try:
@@ -311,8 +313,7 @@ def generate_title_llm(text: str, max_words: int = 4) -> str | None:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            temperature=0.2,
-            max_tokens=16,
+            temperature=0.3,
         )
         raw = (res.choices[0].message.content or "").strip()
         raw = raw.strip('"\'').strip()
