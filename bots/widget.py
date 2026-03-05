@@ -50,11 +50,8 @@ EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "Administration STS")
 EMAIL_FROM = os.getenv("EMAIL_FROM", "administration.STS@avocarbon.com")
 SUPPORT_EMAIL = os.getenv("SUPPORT_EMAIL", "ons.ghariani@avocarbon.com")
 
+
 def detect_language(text: str) -> str:
-    """
-    Detect language using ONLY the LLM.
-    Returns ISO 639-1 2-letter code (e.g., en, fr, ar, es).
-    """
     try:
         res = client.chat.completions.create(
             model=MODEL,
@@ -79,17 +76,12 @@ def detect_language(text: str) -> str:
             return m.group(0)
     except Exception as exc:
         print(f"[LANG DETECT] Failed: {exc}")
-
     return "en"
 
 
 def translate_to_lang(text: str, lang: str) -> str:
-    """
-    Translate using ONLY the LLM. Strictly return target language output.
-    """
-    if not text or lang in {"en", "fr"}:
+    if not text or lang in {"en"}:
         return text
-
     try:
         res = client.chat.completions.create(
             model=MODEL,
@@ -115,78 +107,15 @@ def translate_to_lang(text: str, lang: str) -> str:
         return text
 
 
-def localize_template(en_text: str, fr_text: str, user_message: str, lang: str) -> str:
-    if lang == "fr":
-        return fr_text
-    if lang == "en":
-        return en_text
-    return translate_to_lang(en_text, lang)
-
-
-def build_subject(details: str, lang: str) -> str:
-    """Generate a concise, meaningful email subject that summarizes the issue."""
-    if not details or not details.strip():
-        return {
-            "fr": "Demande de support Digital Coaching",
-            "en": "Digital Coaching Support Request",
-            "default": "Digital Coaching Support Request",
-        }.get(lang, "Digital Coaching Support Request")
-
-    system_prompt = (
-        "You are a support ticket summarizer. Create a VERY concise subject line (max 8-10 words) "
-        "that captures the core issue. Focus on the main problem, error, or feature mentioned. "
-        "Return ONLY the subject line, no quotes, no extra text. "
-        "The subject should be in the same language as the user's description."
-    )
-
-    lang_instruction = f"The user's language is: {lang}. " if lang not in ["en", "fr"] else ""
-    user_prompt = f"{lang_instruction}Summarize this support request into a brief subject line: {details}"
-
-    try:
-        res = client.chat.completions.create(
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.3,
-            max_tokens=30,
-        )
-        summary = (res.choices[0].message.content or "").strip()
-        summary = summary.strip('"\'.,;:')
-
-        if len(summary) > 80:
-            summary = summary[:77].rstrip() + "..."
-
-        return summary
-
-    except Exception as exc:
-        print(f"[SUBJECT] AI summary failed: {exc}")
-        words = details.split()[:6]
-        return " ".join(words) + ("..." if len(details.split()) > 6 else "")
-
-
 def build_html_body(description: str, user_email: str, lang: str) -> str:
-    """Build a clean and modern HTML email body with a single blue-accent card."""
-
-    labels = {
-        "fr": {
-            "title": "Demande de Support Digital Coaching",
-            "email": "📧 Email utilisateur :",
-            "received": "📅 Requête reçue le :",
-            "problem": "❓ Description du problème :",
-            "footer": "© 2026 Digital Coaching - Support Technique",
-        },
-        "en": {
-            "title": "Digital Coaching Support Request",
-            "email": "📧 User email :",
-            "received": "📅 Request received on :",
-            "problem": "❓ Problem description :",
-            "footer": "© 2026 Digital Coaching - Technical Support",
-        },
+    label = {
+        "title": "Digital Coaching Support Request",
+        "email": "User email:",
+        "received": "Request received on:",
+        "problem": "Problem description:",
+        "footer": "© 2026 Digital Coaching - Technical Support",
     }
 
-    label = labels.get(lang, labels["en"])
     current_date = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     description_escaped = (
@@ -210,7 +139,6 @@ def build_html_body(description: str, user_email: str, lang: str) -> str:
         padding: 30px 15px;
         color: #333;
     }}
-
     .container {{
         max-width: 600px;
         margin: auto;
@@ -219,7 +147,6 @@ def build_html_body(description: str, user_email: str, lang: str) -> str:
         box-shadow: 0 4px 15px rgba(0,0,0,0.05);
         padding: 30px;
     }}
-
     .title {{
         font-size: 22px;
         font-weight: 600;
@@ -227,34 +154,28 @@ def build_html_body(description: str, user_email: str, lang: str) -> str:
         margin-bottom: 25px;
         text-align: center;
     }}
-
     .card {{
         display: flex;
         border-radius: 8px;
         overflow: hidden;
         border: 1px solid #e5e7eb;
     }}
-
     .card-accent {{
         width: 6px;
         background-color: #2563eb;
     }}
-
     .card-content {{
         padding: 20px;
         flex: 1;
     }}
-
     .row {{
         margin-bottom: 18px;
     }}
-
     .label {{
         font-weight: 600;
         color: #111827;
         margin-bottom: 6px;
     }}
-
     .value {{
         background-color: #f9fafb;
         padding: 10px 12px;
@@ -262,7 +183,6 @@ def build_html_body(description: str, user_email: str, lang: str) -> str:
         border: 1px solid #e5e7eb;
         font-size: 14px;
     }}
-
     .footer {{
         margin-top: 30px;
         font-size: 12px;
@@ -271,42 +191,27 @@ def build_html_body(description: str, user_email: str, lang: str) -> str:
     }}
 </style>
 </head>
-
 <body>
     <div class="container">
-
-        <div class="title">
-            {label['title']}
-        </div>
-
+        <div class="title">{label['title']}</div>
         <div class="card">
             <div class="card-accent"></div>
             <div class="card-content">
-
                 <div class="row">
                     <div class="label">{label['email']}</div>
                     <div class="value"><strong>{user_email or 'Not provided'}</strong></div>
                 </div>
-
                 <div class="row">
                     <div class="label">{label['received']}</div>
                     <div class="value">{current_date}</div>
                 </div>
-
                 <div class="row">
                     <div class="label">{label['problem']}</div>
-                    <div class="value">
-                        {description_escaped}
-                    </div>
+                    <div class="value">{description_escaped}</div>
                 </div>
-
             </div>
         </div>
-
-        <div class="footer">
-            {label['footer']}<br>
-        </div>
-
+        <div class="footer">{label['footer']}<br></div>
     </div>
 </body>
 </html>"""
@@ -314,40 +219,23 @@ def build_html_body(description: str, user_email: str, lang: str) -> str:
 
 
 def build_text_body(description: str, user_email: str, lang: str) -> str:
-    """Build a plain text version of the email (fallback)."""
-    if lang == "fr":
-        lines = [
-            "=" * 50,
-            "DEMANDE DE SUPPORT DIGITAL COACHING",
-            "=" * 50,
-            f"Email utilisateur : {user_email or 'inconnu'}",
-            f"Date : {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-            "-" * 50,
-            "DESCRIPTION DU PROBLEME",
-            "-" * 50,
-            (description or "").strip(),
-            "=" * 50,
-            "© 2026 Digital Coaching - Support Technique",
-        ]
-    else:
-        lines = [
-            "=" * 50,
-            "DIGITAL COACHING SUPPORT REQUEST",
-            "=" * 50,
-            f"User email: {user_email or 'unknown'}",
-            f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-            "-" * 50,
-            "PROBLEM DESCRIPTION",
-            "-" * 50,
-            (description or "").strip(),
-            "=" * 50,
-            "© 2026 Digital Coaching - Technical Support",
+    lines = [
+        "=" * 50,
+        "DIGITAL COACHING SUPPORT REQUEST",
+        "=" * 50,
+        f"User email: {user_email or 'unknown'}",
+        f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        "-" * 50,
+        "PROBLEM DESCRIPTION",
+        "-" * 50,
+        (description or "").strip(),
+        "=" * 50,
+        "© 2026 Digital Coaching - Technical Support",
         ]
     return "\n".join(lines).strip()
 
 
 def send_support_email(subject: str, description: str, user_email: str, lang: str) -> bool:
-    """Send a beautifully formatted HTML email with plain text fallback."""
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = formataddr((EMAIL_FROM_NAME, EMAIL_FROM))
@@ -377,7 +265,6 @@ def send_support_email(subject: str, description: str, user_email: str, lang: st
                 server.ehlo()
             except Exception:
                 pass
-
             server.send_message(msg)
         return True
     except Exception as exc:
@@ -394,13 +281,12 @@ def polish_description(details: str, lang: str) -> str:
         "Do NOT ask questions. "
         "Return ONLY the corrected text in the same language."
     )
-    user = f"Text:\n{details}"
     try:
         res = client.chat.completions.create(
             model=MODEL,
             messages=[
                 {"role": "system", "content": system},
-                {"role": "user", "content": user},
+                {"role": "user", "content": f"Text:\n{details}"},
             ],
             temperature=0.1,
             max_tokens=600,
@@ -410,59 +296,78 @@ def polish_description(details: str, lang: str) -> str:
             return cleaned
     except Exception as exc:
         print(f"[SUPPORT EMAIL] Grammar fix failed: {exc}")
-
     return " ".join((details or "").strip().split())
-
 
 def resolve_system_prompt(session: dict) -> str:
     return SYSTEM_PROMPT
 
+def _is_support_request_llm(message: str) -> bool:
+    try:
+        res = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an intent classifier. "
+                        "Determine if the user's message is requesting human support, "
+                        "reporting a technical issue, or asking to contact support. "
+                        "Reply ONLY with 'yes' or 'no'. No explanation. No punctuation."
+                    ),
+                },
+                {"role": "user", "content": message},
+            ],
+            temperature=0,
+            max_tokens=3,
+        )
+        raw = (res.choices[0].message.content or "").strip().lower()
+        return raw in {"yes", "oui", "是", "sí", "ja", "हाँ", "네", "예"}
+    except Exception as exc:
+        print(f"[INTENT DETECT] Failed: {exc}")
+        return False
+
+
 def run(message: str, session: dict) -> str:
-    # Widget should be stateless: do not retain chat history.
     session.pop("history", None)
 
     stage = session.get("stage", "idle")
     user_email = session.get("user_email") or ""
     lang = detect_language(message)
 
-    # If we are waiting for details → send email immediately
+    # STAGE 1 : détails reçus → envoyer l'email
     if stage == "support_waiting_details":
         details = message.strip()
         description = polish_description(details, lang)
-        subject = build_subject(description, lang)
-
-        ok = send_support_email(
-            subject=subject,
-            description=description,
-            user_email=user_email,
-            lang=lang,
-        )
-
+        subject = "Digital Coaching Support Request"
+        ok = send_support_email(subject=subject, description=description, user_email=user_email, lang=lang)
         session["stage"] = "idle"
-
-        return (
-            f"Thanks. Your request has been sent to technical support ({SUPPORT_EMAIL})."
-            if ok
-            else f"Sending failed. Please contact {SUPPORT_EMAIL} directly."
+        if ok:
+            return translate_to_lang(
+                f"Thanks. Your request has been sent to technical support ({SUPPORT_EMAIL}).",
+                lang,
+            )
+        return translate_to_lang(
+            f"Sending failed. Please contact {SUPPORT_EMAIL} directly.",
+            lang,
         )
 
+    # STAGE 0 : classifier l'intention AVANT d'appeler le LLM principal
+    if stage == "idle" and _is_support_request_llm(message):
+        session["stage"] = "support_waiting_details"
+        return translate_to_lang(
+            "Of course! Please describe your issue in detail and I'll forward it to our technical support team.",
+            lang,
+        )
+
+    # Flow LLM normal
     system_prompt = resolve_system_prompt(session)
-    messages = [
+    messages_llm = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": message},
     ]
-
     try:
-        res = client.chat.completions.create(
-            model=MODEL,
-            messages=messages,
-        )
+        res = client.chat.completions.create(model=MODEL, messages=messages_llm)
         reply = (res.choices[0].message.content or "").strip()
-
-        if "describe the issue" in reply.lower() or "décrivez le problème" in reply.lower():
-            session["stage"] = "support_waiting_details"
-
         return reply
-
     except Exception:
         return "Technical issue. Please try again."
