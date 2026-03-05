@@ -95,7 +95,10 @@ MANDATORY
 
 Before executing any instruction, dialogue, or methodology from the module:
 
-1. The assistant MUST first display the **complete contextual description** of the module (its purpose and functionality).
+1. The assistant MUST first display the **complete contextual description** of the module.
+The description must:
+- Explain the objective of the module.
+- Explain what the user can learn during the session.
 2. This description must appear naturally, without mentioning the source file name.
 3. After displaying the description, the assistant MUST explicitly ask for confirmation:
    “Do you want to continue?”
@@ -158,15 +161,6 @@ _FORBIDDEN_LINE_PATTERNS = [
     r"(?im)^\s*i am going to.*$",
     r"(?im)^\s*are you ready.*$",
 ]
-
-def strip_narration(text: str) -> str:
-    if not text:
-        return text
-    out = text
-    for pat in _FORBIDDEN_LINE_PATTERNS:
-        out = re.sub(pat, "", out)
-    lines = [ln.rstrip() for ln in out.splitlines() if ln.strip()]
-    return "\n".join(lines).strip()
 
 # -----------------------
 # DB context builders
@@ -281,7 +275,6 @@ def run(message: str, session: dict) -> str:
     try:
         res = client.chat.completions.create(model=MODEL, messages=messages)
         reply = res.choices[0].message.content or ""
-        reply = strip_narration(reply)
         history.append({"role": "assistant", "content": reply})
         return reply
     except Exception:
@@ -355,5 +348,5 @@ def run_stream(message: str, session: dict):
         parts = [error_text]
         yield error_text
 
-    reply = strip_narration("".join(parts))
+    reply = "".join(parts)
     history.append({"role": "assistant", "content": reply})
