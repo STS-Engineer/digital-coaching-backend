@@ -329,6 +329,13 @@ def run_stream(message: str, session: dict):
             "content": (
                 "RFQ_DB_MODE=ON. Use ONLY RFQ_DATABASE_CONTEXT. "
                 "No narration. No confirmations. Answer immediately."
+                "Use this data as your knowledge source ONLY."
+                "Don't reproduce it verbatim."
+                "Field names are internal labels only. NEVER translate or interpret them as words."
+                "Decide yourself which fields are most important and present them first."
+                "Synthesize and present the information as a knowledgeable human expert would."
+                "Write in natural, fluent UI_LANG prose or clean bullet points."
+                "If it is a list, introduce it with a sentence, then list items naturally."
             )
         })
 
