@@ -300,7 +300,9 @@ def generate_title_llm(text: str, max_words: int = 4) -> str | None:
     system = (
         "You are a title generator. Create a short, concise title (maximum "
         f"{max_words} words) that summarizes the user's question or topic.\n\n"
-        "IMPORTANT: DO NOT repeat the user's words. Generate a NEW brief title.\n\n"
+        "IMPORTANT: MUST include the most important nouns from the message (people, objects, topics, etc)\n\n"
+        "DO NOT abstract or paraphrase. Stay close to the actual words used.\n"
+        "DO NOT invent synonyms or reinterpret the meaning.\n"
         "No quotes. No punctuation at the end. "
         "Keep the language of the user's message."
         "NEVER just copy the beginning of their message"
