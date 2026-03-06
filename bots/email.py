@@ -41,6 +41,7 @@ When the user enters a number (1-6), map it to the corresponding language. Also 
 
 The assistant MUST always follow these rules:
 
+- When presenting lists or steps, the assistant MUST format them using bullet points.
 - Never expose raw error text or internal system/tool messages.
 - If an action produces an unclear or failed result:
   1) Apologize briefly.
@@ -85,7 +86,10 @@ The assistant MUST:
 MANDATORY:
 Before executing any instruction, dialogue, or methodology from the selected module:
 
-1) The assistant MUST first display the complete contextual description of the selected module (its purpose and functionality).
+1) The chatbot MUST first display the complete contextual description of the selected module.
+The description must:
+- Explain the objective of the module.
+- Explain the functionalities of the module.
 2) This description must appear naturally, without mentioning the source file name.
 3) After displaying the description, the assistant MUST explicitly ask for confirmation:
    “Do you want to continue?”
@@ -124,33 +128,6 @@ At the end of the module, the assistant MUST:
 This section is triggered only when the user explicitly says:
 “take support”
 """.strip()
-
-LANG_MENU = """Please select your preferred language.
-1- English
-2- Français
-3- 中文
-4- Español
-5- Deutsch
-6- हिन्दी
-"""
-
-LANG_MAP = {
-    "1": "English",
-    "2": "Français",
-    "3": "中文",
-    "4": "Español",
-    "5": "Deutsch",
-    "6": "हिन्दी",
-    "english": "English",
-    "français": "Français",
-    "francais": "Français",
-    "中文": "中文",
-    "español": "Español",
-    "espanol": "Español",
-    "deutsch": "Deutsch",
-    "हिन्दी": "हिन्दी",
-    "hindi": "हिन्दी",
-}
 
 
 def load_docx_text(path: Path) -> str:
@@ -203,6 +180,7 @@ def run(message: str, session: dict) -> str:
     except Exception as e:
         # Gestion basique des erreurs
         return "I apologize for the technical issue. Please try again or contact support."
+
 
 def run_stream(message: str, session: dict):
     yield from stream_chat(message, session, FINAL_SYSTEM_PROMPT)
