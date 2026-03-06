@@ -862,19 +862,20 @@ async def chat_api(payload: dict, request: Request, db: Session = Depends(get_db
         raise HTTPException(status_code=400, detail="Unknown bot_id")
 
     if is_ephemeral_bot(bot_id):
-        session = get_ephemeral_session(email=email, bot_id=bot_id, bot_mode=bot_mode)
+        stage_in = payload.get("widget_stage", "idle")   # ← reçu du client
+        session = {
+            "stage": stage_in,
+            "user_email": email,
+        }
         reply = BOTS[bot_id]["runner"](message, session)
-        now = utcnow()
-        resp = JSONResponse(
-            {
-                "bot_id": bot_id,
-                "reply": reply,
-                "chat_id": None,
-                "title": "Help chat",
-                "updated_at": now.isoformat(),
-            }
-        )
-        return resp
+        return JSONResponse({
+            "bot_id": bot_id,
+            "reply": reply,
+            "chat_id": None,
+            "title": "Help chat",
+            "updated_at": utcnow().isoformat(),
+            "widget_stage": session.get("stage", "idle"),  # ← renvoyé au client
+        })
 
     conv = None
     
@@ -1350,7 +1351,11 @@ async def chat_api_stream(payload: dict, request: Request, db: Session = Depends
         raise HTTPException(status_code=400, detail="Unknown bot_id")
 
     if is_ephemeral_bot(bot_id):
-        session = get_ephemeral_session(email=email, bot_id=bot_id, bot_mode=bot_mode)
+        stage_in = payload.get("widget_stage", "idle")   # ← reçu du client
+        session = {
+            "stage": stage_in,
+            "user_email": email,
+        }
 
         runner = BOTS[bot_id]["runner"]
         runner_stream = BOTS[bot_id].get("runner_stream")
@@ -1375,7 +1380,12 @@ async def chat_api_stream(payload: dict, request: Request, db: Session = Depends
 
                 now = utcnow()
                 yield sse_event(
-                    {"chat_id": None, "title": "Help chat", "updated_at": now.isoformat()},
+                    {
+                        "chat_id": None,
+                        "title": "Help chat",
+                        "updated_at": now.isoformat(),
+                        "widget_stage": session.get("stage", "idle"),  # ← renvoyé au client
+                    },
                     event="done",
                 )
             except Exception:
