@@ -1,12 +1,19 @@
+import json
+import os
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from pathlib import Path
+
 from docx import Document
 
 from openai_client import client, MODEL
-from .streaming import stream_chat
+
 
 # --- Paths robustes ---
-BASE_DIR = Path(__file__).resolve().parent.parent 
-DOC_PATH = BASE_DIR / "docs" / "Generic_training.docx" 
+BASE_DIR = Path(__file__).resolve().parent.parent
+DOC_PATH = BASE_DIR / "docs" / "Generic_training.docx"
+
 
 SYSTEM_PROMPT = """
 # AVOCARBON PROFESSIONAL TRAINER— SYSTEM INSTRUCTIONS
@@ -31,8 +38,6 @@ At startup, the assistant MUST:
 3. Store the selected language as `ui_lang`.
 4. All subsequent communication MUST be delivered exclusively in `ui_lang`, without switching language at any point during the session.
 
-IMPORTANT: 
-When the user enters a number (1-6), map it to the corresponding language. Also accept full language names as input.
 ---------------------------------------------------------------------
 ## 2. Global Operational Rules
 ---------------------------------------------------------------------
@@ -50,7 +55,6 @@ The assistant MUST always follow these rules:
 -----------------------------------------------------------------------
 ## 3. Identification (Session-Based)
 -----------------------------------------------------------------------
-
 After `ui_lang` is selected, greet the user in `ui_lang` as follows:
 
 - If `first_name` is provided:
@@ -61,10 +65,9 @@ After `ui_lang` is selected, greet the user in `ui_lang` as follows:
 -----------------------------------------------------------------------
 ## 4. Module Loading Rules
 -----------------------------------------------------------------------
-
 The assistant MUST load the following module from the knowledge panel:
 
-- Generic Training.docx
+- Generic_training.docx
 
 ### Critical Content Rule (Anti-Hallucination)
 
@@ -80,6 +83,16 @@ The assistant MUST:
 - The assistant MUST follow the module steps exactly as defined in the DOCX, in the same order.
 - The assistant MUST NOT skip, shorten, merge, or reorder any step, chapter, validation, exercise, quiz, recap, or action required by the DOCX.
 - The assistant MUST continue until the module reaches its explicit end state (final summary / closure / evaluation / final action), as specified in the DOCX.
+
+### Quiz Control Rules (Critical)
+
+During the final evaluation:
+- Ask exactly 10 multiple-choice questions.
+- Never ask a question more than once unless the user explicitly asks to retry.
+- After question 10 is answered and corrected, you MUST stop the quiz.
+- Immediately move to the final training summary and email tone confirmation.
+- Never restart the quiz after question 10.
+- Never repeat question 10 once it has been answered and corrected.
 
 -------------------------------------------------------------------------
 ## 5. Mandatory Context Display (Before Interaction)
@@ -98,39 +111,56 @@ Before executing any instruction, dialogue, or methodology from the selected mod
 ---------------------------------------------------------------------------
 At the end of the module, the assistant MUST:
 Summarize key takeaways in `ui_lang`
+
 ---------------------------------------------------------------------------
 ## 7. SUPPORT HANDLING EXTENSION
 ---------------------------------------------------------------------------
 This section is triggered only when the user explicitly says:
 “take support”
+
+---------------------------------------------------------------------------
+## 8. Email Sending Rules
+---------------------------------------------------------------------------
+- The final training summary email must always be sent to the active user's email provided by the application.
+- The assistant MUST never ask the user for the recipient email address.
+- The assistant MUST never ask the user to confirm the recipient email address.
+- When the final summary email is ready, the assistant may ask for the preferred tone if required by the module.
+- The assistant must then call the email tool without requesting any recipient address from the user.
 """.strip()
 
-LANG_MENU = """Please select your preferred language.
-1- English
-2- Français
-3- 中文
-4- Español
-5- Deutsch
-6- हिन्दी
-"""
 
-LANG_MAP = {
-    "1": "English",
-    "2": "Français",
-    "3": "中文",
-    "4": "Español",
-    "5": "Deutsch",
-    "6": "हिन्दी",
-    "english": "English",
-    "français": "Français",
-    "francais": "Français",
-    "中文": "中文",
-    "español": "Español",
-    "espanol": "Español",
-    "deutsch": "Deutsch",
-    "हिन्दी": "हिन्दी",
-    "hindi": "हिन्दी",
-}
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "sendTrainingEmail",
+            "description": "Send the final training summary email in HTML format.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "to": {
+                        "type": "string",
+                        "description": "Recipient email address (auto-filled from the active user if omitted)"
+                    },
+                    "subject": {
+                        "type": "string",
+                        "description": "Email subject"
+                    },
+                    "ui_lang": {
+                        "type": "string",
+                        "description": "Selected user interface language"
+                    },
+                    "html_core": {
+                        "type": "string",
+                        "description": "Full HTML body of the training summary email"
+                    }
+                },
+                "required": ["subject", "ui_lang", "html_core"],
+                "additionalProperties": False
+            }
+        }
+    }
+]
 
 
 def load_docx_text(path: Path) -> str:
@@ -139,14 +169,54 @@ def load_docx_text(path: Path) -> str:
 
     doc = Document(str(path))
     parts = []
+
     for p in doc.paragraphs:
         txt = (p.text or "").strip()
         if txt:
             parts.append(txt)
+
     return "\n".join(parts)
 
 
-# --- Charge une seule fois au démarrage ---
+def send_training_email(to: str, subject: str, ui_lang: str, html_core: str) -> dict:
+    """
+    Envoie l'email HTML via le serveur Outlook AVOCarbon
+    """
+
+    SMTP_HOST = os.getenv("SMTP_HOST", "avocarbon-com.mail.protection.outlook.com")
+    SMTP_PORT = int(os.getenv("SMTP_PORT", "25"))
+    EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "Administration STS")
+    EMAIL_FROM = os.getenv("EMAIL_FROM", "administration.STS@avocarbon.com")
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = f"{EMAIL_FROM_NAME} <{EMAIL_FROM}>"
+    msg["To"] = to
+    msg.attach(MIMEText(html_core, "html", "utf-8"))
+
+    try:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as server:
+            server.sendmail(
+                EMAIL_FROM,
+                [to],
+                msg.as_string()
+            )
+
+        return {
+            "ok": True,
+            "message": "Email sent successfully",
+            "to": to,
+            "subject": subject,
+            "ui_lang": ui_lang
+        }
+
+    except Exception:
+        return {
+            "ok": False,
+            "message": "Email sending failed"
+        }
+
+
 DOC_TEXT = load_docx_text(DOC_PATH)
 
 FINAL_SYSTEM_PROMPT = (
@@ -158,31 +228,116 @@ FINAL_SYSTEM_PROMPT = (
 )
 
 
+def _extract_ui_lang(session: dict) -> str:
+    return session.get("ui_lang", "English")
+
+
+def _extract_active_email(session: dict) -> str:
+    return (session.get("user_email") or "").strip()
+
+
+def _build_active_email_system_message(active_email: str) -> dict:
+    if active_email:
+        content = (
+            f"ACTIVE_USER_EMAIL={active_email}. "
+            "If an email recipient is needed, use ACTIVE_USER_EMAIL. "
+            "Never ask the user for a recipient email or confirmation. "
+            "Do not mention the address unless the user explicitly asks."
+        )
+    else:
+        content = (
+            "ACTIVE_USER_EMAIL is not available. "
+            "Never ask the user for a recipient email or confirmation. "
+            "If an email must be sent, state it will be sent to the active user's email "
+            "provided by the application once available."
+        )
+    return {"role": "system", "content": content}
+
+
 def run(message: str, session: dict) -> str:
-    # Toujours ajouter le message de l'utilisateur à l'historique
     history = session.setdefault("history", [])
     history.append({"role": "user", "content": message})
-    
-    # Préparer les messages pour l'API
-    messages = [{"role": "system", "content": FINAL_SYSTEM_PROMPT}] + history
-    
-    # Appeler l'API OpenAI
+
+    active_email = _extract_active_email(session)
+    base_messages = [
+        {"role": "system", "content": FINAL_SYSTEM_PROMPT},
+        _build_active_email_system_message(active_email),
+    ]
+    messages = base_messages + history
+
     try:
-        res = client.chat.completions.create(
+        first_response = client.chat.completions.create(
             model=MODEL,
             messages=messages,
+            tools=TOOLS,
+            tool_choice="auto",
         )
-        
-        reply = res.choices[0].message.content
-        
-        # Ajouter la réponse de l'assistant à l'historique
-        history.append({"role": "assistant", "content": reply})
-        
-        return reply
-        
-    except Exception as e:
-        # Gestion basique des erreurs
+
+        assistant_message = first_response.choices[0].message
+
+        if not getattr(assistant_message, "tool_calls", None):
+            reply = assistant_message.content or ""
+            history.append({"role": "assistant", "content": reply})
+            return reply
+
+        history.append(
+            {
+                "role": "assistant",
+                "content": assistant_message.content or "",
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": tc.type,
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                    for tc in assistant_message.tool_calls
+                ],
+            }
+        )
+
+        for tc in assistant_message.tool_calls:
+            if tc.function.name == "sendTrainingEmail":
+                try:
+                    args = json.loads(tc.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+
+                if not active_email:
+                    result = {
+                        "ok": False,
+                        "message": "Active user email not available",
+                    }
+                else:
+                    result = send_training_email(
+                        to=active_email,
+                        subject=args.get("subject", "Training Summary"),
+                        ui_lang=args.get("ui_lang") or _extract_ui_lang(session),
+                        html_core=args.get("html_core", ""),
+                    )
+
+                history.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps(result, ensure_ascii=False),
+                    }
+                )
+
+        second_response = client.chat.completions.create(
+            model=MODEL,
+            messages=base_messages + history,
+        )
+
+        final_reply = second_response.choices[0].message.content or ""
+        history.append({"role": "assistant", "content": final_reply})
+        return final_reply
+
+    except Exception:
         return "I apologize for the technical issue. Please try again or contact support."
 
+
 def run_stream(message: str, session: dict):
-    yield from stream_chat(message, session, FINAL_SYSTEM_PROMPT)
+    yield run(message, session)
