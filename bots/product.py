@@ -5,20 +5,28 @@ from pathlib import Path
 from docx import Document
 
 from openai_client import client, MODEL
-from rfq_db import init_rfq_db, rfq_session, list_product_lines, get_product_line_by_id, list_products, list_products_grouped_by_line, search_products_by_name
+from rfq_db import (
+    get_product_line_by_id,
+    init_rfq_db,
+    list_product_lines,
+    list_products,
+    list_products_grouped_by_line,
+    rfq_session,
+    search_products_by_name,
+)
 
 # --- Paths robustes ---
-BASE_DIR = Path(__file__).resolve().parent.parent 
-DOC_PATH = BASE_DIR / "docs" / "Product_line_exploration.docx" 
+BASE_DIR = Path(__file__).resolve().parent.parent
+DOC_PATH = BASE_DIR / "docs" / "Product_line_exploration.docx"
 
-# ✅ à appeler UNE seule fois au démarrage de l'app
+# A appeler UNE seule fois au demarrage de l'app
 init_rfq_db()
 
 SYSTEM_PROMPT = """
-# DIGITAL COACHING SYSTEM — PRODUCT & PRODUCT LINES ONLY (SYSTEM INSTRUCTIONS)
+# DIGITAL COACHING SYSTEM - PRODUCT & PRODUCT LINES ONLY (SYSTEM INSTRUCTIONS)
 
-The assistant is a **modular digital coaching system** designed to operate through structured, professional workflows.
-All rules below are **mandatory and have system-level priority**.
+The assistant is a modular digital coaching system designed to operate through structured, professional workflows.
+All rules below are mandatory and have system-level priority.
 
 ========================
 1) LANGUAGE SELECTION
@@ -26,19 +34,20 @@ All rules below are **mandatory and have system-level priority**.
 At startup, the assistant MUST:
 
 1. Prompt the user with:
-   “Please select your preferred language.”
+   "Please select your preferred language."
 2. Display the available language options:
-   - English
-   - Français
-   - 中文
-   - Español
-   - Deutsch
-   - हिन्दी
+   1- English
+   2- Français
+   3- 中文
+   4- Español
+   5- Deutsch
+   6- हिन्दी
 3. Store the selected language as `ui_lang`.
 4. All subsequent communication MUST be delivered exclusively in `ui_lang`, without switching language at any point during the session.
 
-IMPORTANT: 
-When the user enters a number (1-6), map it to the corresponding language. Also accept full language names as input.========================
+IMPORTANT:
+When the user enters a number (1-6), map it to the corresponding language. Also accept full language names as input.
+
 ========================
 2) GLOBAL OPERATIONAL RULES
 ========================
@@ -50,36 +59,46 @@ The assistant MUST always follow these rules:
   2) Reformulate the request once in a simpler way.
   3) If the result remains unclear, proceed with a best-effort manual explanation without mentioning the failure.
 - Preserve the exact spelling of `first_name` when provided.
-- Keep prompts concise, professional, and limited to **one request per turn**.
+- Keep prompts concise, professional, and limited to one request per turn.
 - No emojis.
+
 ===========================
 3) IDENTIFICATION (SESSION-BASED)
 ===========================
 Greet the user in `ui_lang` as follows:
 
 - If `first_name` is provided:
-  “Welcome {first_name} in your Digital Coach assistant.”
+  Use the natural equivalent in `ui_lang` of:
+  "Welcome {first_name} in your Digital Coach assistant."
 - If no name is provided:
-  “Welcome in your digital assistant.”
+  Use the natural equivalent in `ui_lang` of:
+  "Welcome in your digital assistant."
+
+IMPORTANT:
+- These English sentences are meaning references only.
+- NEVER output them in English unless `ui_lang` is English.
+- Always translate or adapt them naturally into `ui_lang`.
 
 ========================
-4) Single Module Mode 
+4) Single Module Mode
 ========================
-Immediately after the greeting, in the **same turn**, the assistant MUST:
+Immediately after the greeting, in the same turn, the assistant MUST:
 
 - Announce that this assistant operates for:
-  **Product and Product Lines understanding**.
+  Product and Product Lines understanding.
 - The assistant MUST NOT display a main menu and MUST NOT offer other topics.
+
 ===========================
- 5) Module Loading Rules (Fixed)
+5) Module Loading Rules (Fixed)
 ===========================
 The assistant MUST always load the following module:
 
-- **Product and Product Lines understanding** → Product_line_exploration.docx
+- Product and Product Lines understanding -> Product_line_exploration.docx
+
 ===========================
- Critical Content Rule (Anti-Hallucination)
+Critical Content Rule (Anti-Hallucination)
 ===========================
-The content of the referenced `.docx` is assumed to be **already provided in the assistant’s context**.
+The content of the referenced .docx is assumed to be already provided in the assistant's context.
 
 The assistant MUST:
 
@@ -95,30 +114,33 @@ MANDATORY
 
 Before executing any instruction, dialogue, or methodology from the module:
 
-1. The assistant MUST first display the **complete contextual description** of the module.
+1. The assistant MUST first display the complete contextual description of the module.
 The description must:
 - Explain the objective of the module.
 - Explain what the user can learn during the session.
 2. This description must appear naturally, without mentioning the source file name.
-3. After displaying the description, the assistant MUST explicitly ask for confirmation:
-   “Do you want to continue?”
+3. After displaying the description, the assistant MUST explicitly ask for confirmation in `ui_lang`.
+   Use the natural equivalent in `ui_lang` of:
+   "Do you want to continue?"
 4. The assistant MUST wait for a positive confirmation before proceeding.
+
 ========================
 7) INTERACTION RULES (WHEN MODULE IS ACTIVE)
 ========================
 When the module is active, the assistant MUST:
 
-- Apply the methodology from the selected module **exactly**.
+- Apply the methodology from the selected module exactly.
 - Maintain:
   - Neutral, professional tone
   - Structured, step-by-step progression
   - Validation before advancing
   - Active listening and reformulation
   - No emojis
-- Keep prompts limited to **one request per turn**.
+- Keep prompts limited to one request per turn.
 
 If the user requests anything outside product/product line understanding, the assistant MUST politely refuse and restate the scope:
-“This assistant only covers Product and Product Lines understanding.”
+"This assistant only covers Product and Product Lines understanding."
+
 ========================
 8) CLOSURE & NEXT STEPS
 ========================
@@ -131,16 +153,18 @@ At the end of the module interaction, the assistant MUST:
 3. Remind the user they can ask a new product/product-line question at any time.
 """.strip()
 
+
 def load_docx_text(path: Path) -> str:
     if not path.exists():
         raise FileNotFoundError(f"DOCX not found at: {path}")
     doc = Document(str(path))
     parts = []
-    for p in doc.paragraphs:
-        txt = (p.text or "").strip()
-        if txt:
-            parts.append(txt)
+    for paragraph in doc.paragraphs:
+        text = (paragraph.text or "").strip()
+        if text:
+            parts.append(text)
     return "\n".join(parts)
+
 
 DOC_TEXT = load_docx_text(DOC_PATH)
 FINAL_SYSTEM_PROMPT = (
@@ -151,7 +175,6 @@ FINAL_SYSTEM_PROMPT = (
     + DOC_TEXT
 )
 
-# --- Anti-narration output cleaning (safety net) ---
 _FORBIDDEN_LINE_PATTERNS = [
     r"(?im)^\s*i will.*$",
     r"(?im)^\s*please hold.*$",
@@ -162,25 +185,86 @@ _FORBIDDEN_LINE_PATTERNS = [
     r"(?im)^\s*are you ready.*$",
 ]
 
-# -----------------------
-# DB context builders
-# -----------------------
+LANG_MAP = {
+    "1": "English",
+    "2": "Francais",
+    "3": "Chinese",
+    "4": "Espanol",
+    "5": "Deutsch",
+    "6": "Hindi",
+    "english": "English",
+    "en": "English",
+    "francais": "Francais",
+    "francais.": "Francais",
+    "francais,": "Francais",
+    "francais;": "Francais",
+    "francais:": "Francais",
+    "francais!": "Francais",
+    "francais?": "Francais",
+    "francais)": "Francais",
+    "francais]": "Francais",
+    "francais}": "Francais",
+    "francais\"": "Francais",
+    "francais'": "Francais",
+    "francais ": "Francais",
+    "francais-": "Francais",
+    "francais_": "Francais",
+    "francais/": "Francais",
+    "francais\\": "Francais",
+    "francais*": "Francais",
+    "francais+": "Francais",
+    "francais=": "Francais",
+    "francais~": "Francais",
+    "francais|": "Francais",
+    "francais<": "Francais",
+    "francais>": "Francais",
+    "francais@": "Francais",
+    "francais#": "Francais",
+    "francais$": "Francais",
+    "francais%": "Francais",
+    "francais^": "Francais",
+    "francais&": "Francais",
+    "francais(": "Francais",
+    "french": "Francais",
+    "fr": "Francais",
+    "français": "Francais",
+    "chinese": "Chinese",
+    "mandarin": "Chinese",
+    "中文": "Chinese",
+    "espanol": "Espanol",
+    "español": "Espanol",
+    "spanish": "Espanol",
+    "es": "Espanol",
+    "deutsch": "Deutsch",
+    "german": "Deutsch",
+    "de": "Deutsch",
+    "hindi": "Hindi",
+    "hi": "Hindi",
+    "हिन्दी": "Hindi",
+}
+
 
 def build_product_lines_list_context() -> str | None:
     try:
         with rfq_session() as db:
             payload = {"productLinesList": list_product_lines(db, limit=200)}
-        return "RFQ_DATABASE_CONTEXT:\n" + json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+        return "RFQ_DATABASE_CONTEXT:\n" + json.dumps(
+            payload, ensure_ascii=False, indent=2, default=str
+        )
     except Exception:
         return None
+
 
 def build_products_grouped_context() -> str | None:
     try:
         with rfq_session() as db:
             payload = {"productsByLine": list_products_grouped_by_line(db, limit=2000)}
-        return "RFQ_DATABASE_CONTEXT:\n" + json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+        return "RFQ_DATABASE_CONTEXT:\n" + json.dumps(
+            payload, ensure_ascii=False, indent=2, default=str
+        )
     except Exception:
         return None
+
 
 def build_product_line_detail_context(product_line_id: int) -> str | None:
     try:
@@ -189,27 +273,45 @@ def build_product_line_detail_context(product_line_id: int) -> str | None:
             if not line:
                 return None
             payload = {"productLineDetail": line}
-        return "RFQ_DATABASE_CONTEXT:\n" + json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+        return "RFQ_DATABASE_CONTEXT:\n" + json.dumps(
+            payload, ensure_ascii=False, indent=2, default=str
+        )
     except Exception:
         return None
 
+
 def build_product_detail_context(product_query: str) -> str | None:
-    """
-    Option 4 step 2: search product by name and inject ALL columns result(s)
-    """
     try:
         with rfq_session() as db:
             matches = search_products_by_name(db, product_query, limit=10)
             if not matches:
                 return None
             payload = {"productDetails": matches}
-        return "RFQ_DATABASE_CONTEXT:\n" + json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+        return "RFQ_DATABASE_CONTEXT:\n" + json.dumps(
+            payload, ensure_ascii=False, indent=2, default=str
+        )
     except Exception:
         return None
 
-# -----------------------
-# Runner
-# -----------------------
+
+def detect_ui_lang(message: str) -> str | None:
+    normalized = re.sub(r"\s+", " ", (message or "").strip()).lower()
+    normalized = normalized.strip("()[]{}")
+    normalized = normalized.rstrip(".!,;:")
+    return LANG_MAP.get(normalized)
+
+
+def build_ui_lang_instruction(ui_lang: str) -> dict:
+    return {
+        "role": "system",
+        "content": (
+            f"UI_LANG={ui_lang}. Respond ONLY in UI_LANG. "
+            "Translate any example or reference English sentence into UI_LANG. "
+            "NEVER keep the greeting or the confirmation question in English "
+            "unless UI_LANG is English."
+        ),
+    }
+
 
 def run(message: str, session: dict) -> str:
     history = session.setdefault("history", [])
@@ -219,62 +321,67 @@ def run(message: str, session: dict) -> str:
     msg = raw.lower()
     stage = (session.get("stage") or "select_lang").strip()
 
+    if stage == "select_lang":
+        ui_lang = detect_ui_lang(raw)
+        if ui_lang:
+            session["ui_lang"] = ui_lang
+            session["stage"] = "in_module"
+            stage = "in_module"
+        else:
+            session["stage"] = "select_lang"
+
     db_context = None
 
-    # OPTION 3: waiting for numeric product_line_id
     if stage == "await_product_line_id":
         if raw.isdigit():
             db_context = build_product_line_detail_context(int(raw))
             if db_context:
                 session["stage"] = "in_module"
         if not db_context:
-            # stay in same stage if invalid
             session["stage"] = "await_product_line_id"
 
-    # OPTION 4: waiting for product query/name (free text)
     if not db_context and stage == "await_product_query":
         if raw:
             db_context = build_product_detail_context(raw)
             if db_context:
                 session["stage"] = "in_module"
             else:
-                # stay waiting if no match
                 session["stage"] = "await_product_query"
 
-    # Menu triggers (only if not already handled)
-    if not db_context:
+    if not db_context and stage != "select_lang":
         is_opt3 = msg in {"3", "option 3", "3.", "3)"} or msg.startswith("3 ")
         is_opt4 = msg in {"4", "option 4", "4.", "4)"} or msg.startswith("4 ")
 
         if is_opt3:
             session["stage"] = "await_product_line_id"
             db_context = build_product_lines_list_context()
-
         elif is_opt4:
             session["stage"] = "await_product_query"
             db_context = build_products_grouped_context()
 
     messages = [{"role": "system", "content": FINAL_SYSTEM_PROMPT}]
 
-    # lock language every turn if you store ui_lang in conversation
-    ui_lang = session.get("ui_lang") or "English"
-    messages.append({"role": "system", "content": f"UI_LANG={ui_lang}. Respond ONLY in UI_LANG."})
+    ui_lang = session.get("ui_lang")
+    if ui_lang:
+        messages.append(build_ui_lang_instruction(ui_lang))
 
     if db_context:
         messages.append({"role": "system", "content": db_context})
-        messages.append({
-            "role": "system",
-            "content": (
-                "RFQ_DB_MODE=ON. Use ONLY RFQ_DATABASE_CONTEXT. "
-                "No narration. No confirmations. Answer immediately."
-            )
-        })
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "RFQ_DB_MODE=ON. Use ONLY RFQ_DATABASE_CONTEXT. "
+                    "No narration. No confirmations. Answer immediately."
+                ),
+            }
+        )
 
     messages += history
 
     try:
-        res = client.chat.completions.create(model=MODEL, messages=messages)
-        reply = res.choices[0].message.content or ""
+        response = client.chat.completions.create(model=MODEL, messages=messages)
+        reply = response.choices[0].message.content or ""
         history.append({"role": "assistant", "content": reply})
         return reply
     except Exception:
@@ -289,6 +396,15 @@ def run_stream(message: str, session: dict):
     msg = raw.lower()
     stage = (session.get("stage") or "select_lang").strip()
 
+    if stage == "select_lang":
+        ui_lang = detect_ui_lang(raw)
+        if ui_lang:
+            session["ui_lang"] = ui_lang
+            session["stage"] = "in_module"
+            stage = "in_module"
+        else:
+            session["stage"] = "select_lang"
+
     db_context = None
 
     if stage == "await_product_line_id":
@@ -307,7 +423,7 @@ def run_stream(message: str, session: dict):
             else:
                 session["stage"] = "await_product_query"
 
-    if not db_context:
+    if not db_context and stage != "select_lang":
         is_opt3 = msg in {"3", "option 3", "3.", "3)"} or msg.startswith("3 ")
         is_opt4 = msg in {"4", "option 4", "4.", "4)"} or msg.startswith("4 ")
 
@@ -319,31 +435,37 @@ def run_stream(message: str, session: dict):
             db_context = build_products_grouped_context()
 
     messages = [{"role": "system", "content": FINAL_SYSTEM_PROMPT}]
-    ui_lang = session.get("ui_lang") or "English"
-    messages.append({"role": "system", "content": f"UI_LANG={ui_lang}. Respond ONLY in UI_LANG."})
+
+    ui_lang = session.get("ui_lang")
+    if ui_lang:
+        messages.append(build_ui_lang_instruction(ui_lang))
 
     if db_context:
         messages.append({"role": "system", "content": db_context})
-        messages.append({
-            "role": "system",
-            "content": (
-                "RFQ_DB_MODE=ON. Use ONLY RFQ_DATABASE_CONTEXT. "
-                "No narration. No confirmations. Answer immediately."
-                "Use this data as your knowledge source ONLY."
-                "Don't reproduce it verbatim."
-                "Field names are internal labels only. NEVER translate or interpret them as words."
-                "Decide yourself which fields are most important and present them first."
-                "Synthesize and present the information as a knowledgeable human expert would."
-                "Write in natural, fluent UI_LANG prose or clean bullet points."
-                "If it is a list, introduce it with a sentence, then list items naturally."
-            )
-        })
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "RFQ_DB_MODE=ON. Use ONLY RFQ_DATABASE_CONTEXT. "
+                    "No narration. No confirmations. Answer immediately."
+                    "Use this data as your knowledge source ONLY."
+                    "Don't reproduce it verbatim."
+                    "Field names are internal labels only. NEVER translate or interpret them as words."
+                    "Decide yourself which fields are most important and present them first."
+                    "Synthesize and present the information as a knowledgeable human expert would."
+                    "Write in natural, fluent UI_LANG prose or clean bullet points."
+                    "If it is a list, introduce it with a sentence, then list items naturally."
+                ),
+            }
+        )
 
     messages += history
 
     parts = []
     try:
-        stream = client.chat.completions.create(model=MODEL, messages=messages, stream=True)
+        stream = client.chat.completions.create(
+            model=MODEL, messages=messages, stream=True
+        )
         for chunk in stream:
             delta = chunk.choices[0].delta.content if chunk.choices else None
             if not delta:
